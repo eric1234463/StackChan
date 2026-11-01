@@ -1,5 +1,5 @@
 diff --git a/main/application.cc b/main/application.cc
-index d69d43d..1af8d4a 100644
+index d69d43d..0877e5b 100644
 --- a/main/application.cc
 +++ b/main/application.cc
 @@ -1,14 +1,15 @@
@@ -24,7 +24,17 @@ index d69d43d..1af8d4a 100644
  
  #include <cstring>
  #include <esp_log.h>
-@@ -327,8 +328,13 @@ void Application::ActivationTask() {
+@@ -217,7 +218,8 @@ void Application::Run() {
+             HandleStopListeningEvent();
+         }
+ 
+-        if (bits & MAIN_EVENT_SEND_AUDIO) {
++        // Hermes: while connecting, leave captured audio queued instead of popping and dropping it.
++        if ((bits & MAIN_EVENT_SEND_AUDIO) && GetDeviceState() != kDeviceStateConnecting) {
+             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
+                 if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
+                     break;
+@@ -327,8 +329,13 @@ void Application::ActivationTask() {
      // Check for new assets version
      CheckAssetsVersion();
  
@@ -38,7 +48,7 @@ index d69d43d..1af8d4a 100644
  
      // Initialize the protocol
      InitializeProtocol();
-@@ -399,6 +405,7 @@ void Application::CheckNewVersion() {
+@@ -399,6 +406,7 @@ void Application::CheckNewVersion() {
      const int MAX_RETRY = 10;
      int retry_count = 0;
      int retry_delay = 10; // Initial retry delay in seconds
@@ -46,7 +56,7 @@ index d69d43d..1af8d4a 100644
  
      auto& board = Board::GetInstance();
      while (true) {
-@@ -441,15 +448,18 @@ void Application::CheckNewVersion() {
+@@ -441,15 +449,18 @@ void Application::CheckNewVersion() {
  
          // No new version, mark the current version as valid
          ota_->MarkCurrentVersionValid();
@@ -69,7 +79,7 @@ index d69d43d..1af8d4a 100644
          }
  
          // This will block the loop until the activation is done or timeout
-@@ -477,6 +487,9 @@ void Application::InitializeProtocol() {
+@@ -477,6 +488,9 @@ void Application::InitializeProtocol() {
  
      display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
  
@@ -79,7 +89,7 @@ index d69d43d..1af8d4a 100644
      if (ota_->HasMqttConfig()) {
          protocol_ = std::make_unique<MqttProtocol>();
      } else if (ota_->HasWebsocketConfig()) {
-@@ -485,6 +498,7 @@ void Application::InitializeProtocol() {
+@@ -485,6 +499,7 @@ void Application::InitializeProtocol() {
          ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
          protocol_ = std::make_unique<MqttProtocol>();
      }
@@ -87,7 +97,7 @@ index d69d43d..1af8d4a 100644
  
      protocol_->OnConnected([this]() {
          DismissAlert();
-@@ -609,36 +623,6 @@ void Application::InitializeProtocol() {
+@@ -609,36 +624,6 @@ void Application::InitializeProtocol() {
      protocol_->Start();
  }
  
@@ -124,7 +134,7 @@ index d69d43d..1af8d4a 100644
  void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
      ESP_LOGW(TAG, "Alert [%s] %s: %s", emotion, status, message);
      auto display = Board::GetInstance().GetDisplay();
-@@ -716,8 +700,13 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
+@@ -716,8 +701,13 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
          return;
      }
  
@@ -138,7 +148,18 @@ index d69d43d..1af8d4a 100644
              return;
          }
      }
-@@ -825,8 +814,13 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+@@ -787,6 +777,10 @@ void Application::HandleWakeWordDetectedEvent() {
+         auto wake_word = audio_service_.GetLastWakeWord();
+ 
+         if (!protocol_->IsAudioChannelOpened()) {
++            // Hermes: capture into the send queue (max 2.4 s) while the channel opens, so speech
++            // started right after the wake word is not lost; it is flushed once listening starts.
++            while (audio_service_.PopPacketFromSendQueue());
++            audio_service_.EnableVoiceProcessing(true);
+             SetDeviceState(kDeviceStateConnecting);
+             // Schedule to let the state change be processed first (UI update),
+             // then continue with OpenAudioChannel which may block for ~1 second
+@@ -825,8 +819,18 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
          return;
      }
  
@@ -149,10 +170,30 @@ index d69d43d..1af8d4a 100644
      if (!protocol_->IsAudioChannelOpened()) {
          if (!protocol_->OpenAudioChannel()) {
 +            board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
++            // Hermes: drop the speech captured for this failed session (drain first: a full
++            // send queue blocks the input task, which Stop() would otherwise wait on).
++            while (audio_service_.PopPacketFromSendQueue());
++            audio_service_.EnableVoiceProcessing(false);
++            while (audio_service_.PopPacketFromSendQueue());
              audio_service_.EnableWakeWordDetection(true);
              return;
          }
-@@ -1116,4 +1110,3 @@ void Application::ResetProtocol() {
+@@ -889,7 +893,13 @@ void Application::HandleStateChangedEvent() {
+                 
+                 // Send the start listening command
+                 protocol_->SendStartListening(listening_mode_);
+-                audio_service_.EnableVoiceProcessing(true);
++                // Hermes: already running when it was started at wake word; restarting would
++                // re-run the 120 ms input warmup and cut the start of the queued speech.
++                if (!audio_service_.IsAudioProcessorRunning()) {
++                    audio_service_.EnableVoiceProcessing(true);
++                }
++                // Hermes: flush audio queued while connecting, after the start listening command.
++                xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
+             }
+ 
+ #ifdef CONFIG_WAKE_WORD_DETECTION_IN_LISTENING
+@@ -1116,4 +1126,3 @@ void Application::ResetProtocol() {
          protocol_.reset();
      });
  }

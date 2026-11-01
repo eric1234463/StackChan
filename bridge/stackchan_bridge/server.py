@@ -236,7 +236,9 @@ async def serve_forever(cfg: Config, backends: Backends | None = None, ready: as
             log.info("device disconnected")
 
         async with serve(handler, cfg.host, cfg.port, process_request=make_auth_check(cfg),
-                         max_size=2**20, ping_interval=20) as server:
+                         max_size=2**20, ping_interval=20,
+                         # The device never answers the close frame; the 10 s default kept it "listening".
+                         close_timeout=1) as server:
             log.info("listening on %s:%d%s/", cfg.host, cfg.port, WS_PATH)
             if ready:
                 ready.set()
