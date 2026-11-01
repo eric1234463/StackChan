@@ -253,7 +253,7 @@ Logs never contain tokens, `API_SERVER_KEY` or full URLs with credentials. Times
 
 ### 7.7 Service
 
-launchd `space.hermes.stackchan-bridge`, runs with the `whisper-env` interpreter (or its own venv), `KeepAlive=true`, logs to `~/Library/Logs/stackchan-bridge.log`.
+launchd `space.hermes.stackchan-bridge` (template `bridge/launchd/`, installed by `bridge/install.sh`), runs with `bridge/.venv`, reads `bridge/.env`, `KeepAlive=true`, logs to `~/Library/Logs/stackchan-bridge.log`.
 
 ## 8. Hermes setup (done 2026-11-01)
 
