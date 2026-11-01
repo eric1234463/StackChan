@@ -17,6 +17,7 @@
 #include <mutex>
 #include <assets.h>
 #include <settings.h>
+#include <ssid_manager.h>
 
 static const char* _tag = "HAL_BRIDGE";
 
@@ -109,9 +110,34 @@ void xiaozhi_board_init()
     auto& board = Board::GetInstance();
 }
 
+#if CONFIG_HERMES_BAKED_CONFIG
+static_assert(sizeof(CONFIG_HERMES_WIFI_SSID) > 1, "CONFIG_HERMES_WIFI_SSID is empty: set it in sdkconfig.defaults.local");
+static_assert(sizeof(CONFIG_HERMES_WS_URL) > 1, "CONFIG_HERMES_WS_URL is empty: set it in sdkconfig.defaults.local");
+static_assert(sizeof(CONFIG_HERMES_WS_TOKEN) > 1, "CONFIG_HERMES_WS_TOKEN is empty: set it in sdkconfig.defaults.local");
+
+// Baked config always wins over anything left in NVS by earlier firmware or provisioning.
+static void apply_hermes_baked_config()
+{
+    auto& ssids = SsidManager::GetInstance();
+    ssids.Clear();
+    ssids.AddSsid(CONFIG_HERMES_WIFI_SSID, CONFIG_HERMES_WIFI_PASSWORD);
+
+    Settings ws("websocket", true);
+    ws.SetString("url", CONFIG_HERMES_WS_URL);
+    ws.SetString("token", CONFIG_HERMES_WS_TOKEN);
+
+    // Never log the credentials, token or full URL.
+    ESP_LOGI(_tag, "Hermes baked config applied");
+}
+#endif
+
 void start_xiaozhi_app()
 {
     set_xiaozhi_mode(true);
+
+#if CONFIG_HERMES_BAKED_CONFIG
+    apply_hermes_baked_config();
+#endif
 
     // Initialize and run the application
     auto& app = Application::GetInstance();
@@ -132,6 +158,10 @@ XiaozhiConfig_t get_xiaozhi_config()
         settings.GetInt(_xiaozhi_config_idle_random_movement_key.data(), config.idleRandomMovementLevel);
     config.startAiAgentOnBoot =
         settings.GetBool(_xiaozhi_config_start_ai_agent_on_boot_key.data(), config.startAiAgentOnBoot);
+#if CONFIG_HERMES_BAKED_CONFIG
+    config.startAiAgentOnBoot      = true;
+    config.idleRandomMovementLevel = CONFIG_HERMES_IDLE_MOTION_LEVEL;  // no setup UI to change it
+#endif
 
     return config;
 }

@@ -1,0 +1,6 @@
+# Copy to sdkconfig.defaults.local (gitignored) and fill in. Applied automatically by CMakeLists.txt.
+CONFIG_HERMES_BAKED_CONFIG=y
+CONFIG_HERMES_WIFI_SSID="your-2.4GHz-ssid"
+CONFIG_HERMES_WIFI_PASSWORD="your-wifi-password"
+CONFIG_HERMES_WS_URL="ws://<mac-lan-ip>:8765/xiaozhi/v1/"
+CONFIG_HERMES_WS_TOKEN="<same value as bridge BRIDGE_DEVICE_TOKEN>"

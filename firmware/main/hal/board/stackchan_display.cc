@@ -3,6 +3,12 @@
  *
  * SPDX-License-Identifier: MIT
  */
+#include <sdkconfig.h>
+#if CONFIG_HERMES_STATE_IMAGES
+#include "hal/hermes/state_screen.h"
+#include <application.h>
+#include <wifi_manager.h>
+#endif
 #include "stackchan_display.h"
 #include <esp_log.h>
 #include <esp_err.h>
@@ -328,6 +334,11 @@ void StackChanAvatarDisplay::SetEmotion(const char* emotion)
 
     DisplayLockGuard lock(this);
 
+#if CONFIG_HERMES_STATE_IMAGES
+    hermes_screen::Init();
+    hermes_screen::OnEmotion(emotion);
+#endif
+
     // ESP_LOGE(TAG, "SetEmotion: %s", emotion);
 
     auto& avatar = stackchan.avatar();
@@ -393,6 +404,13 @@ void StackChanAvatarDisplay::SetChatMessage(const char* role, const char* conten
 
     DisplayLockGuard lock(this);
 
+#if CONFIG_HERMES_STATE_IMAGES
+    if (role != nullptr && strcmp(role, "user") == 0) {
+        hermes_screen::Init();
+        hermes_screen::OnUserTranscript();
+    }
+#endif
+
     if (strcmp(role, "system") == 0) {
         stackchan.avatar().setSpeech(content);
     } else if (strcmp(role, "assistant") == 0) {
@@ -445,6 +463,10 @@ void StackChanAvatarDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image)
 
 void StackChanAvatarDisplay::UpdateStatusBar(bool update_all)
 {
+#if CONFIG_HERMES_STATE_IMAGES
+    DisplayLockGuard lock(this);
+    hermes_screen::Tick(WifiManager::GetInstance().IsConnected());
+#endif
 }
 
 void StackChanAvatarDisplay::SetTheme(Theme* theme)
@@ -491,6 +513,11 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
     auto& motion = stackchan.motion();
 
     DisplayLockGuard lock(this);
+
+#if CONFIG_HERMES_STATE_IMAGES
+    hermes_screen::Init();
+    hermes_screen::OnDeviceState(Application::GetInstance().GetDeviceState());
+#endif
 
     bool is_idle      = false;
     bool is_listening = false;

@@ -11,6 +11,56 @@ config STACKCHAN_SERVER_URL
 
 endmenu
 
+menu "Hermes Build"
+
+config HERMES_BAKED_CONFIG
+    bool "Use baked-in Wi-Fi and Hermes bridge config (no provisioning)"
+    default n
+    help
+        Boot straight into the voice runtime with the Wi-Fi credentials and
+        bridge WebSocket settings below. Skips setup, OTA check and activation.
+        Set real values only in the gitignored sdkconfig.defaults.local.
+
+config HERMES_WIFI_SSID
+    string "Wi-Fi SSID"
+    depends on HERMES_BAKED_CONFIG
+    default ""
+
+config HERMES_WIFI_PASSWORD
+    string "Wi-Fi password"
+    depends on HERMES_BAKED_CONFIG
+    default ""
+
+config HERMES_WS_URL
+    string "Hermes bridge WebSocket URL"
+    depends on HERMES_BAKED_CONFIG
+    default ""
+    help
+        e.g. ws://192.168.1.10:8765/xiaozhi/v1/
+
+config HERMES_WS_TOKEN
+    string "Hermes bridge device token"
+    depends on HERMES_BAKED_CONFIG
+    default ""
+
+config HERMES_IDLE_MOTION_LEVEL
+    int "Random head movement while idle (0 off, 1 slow, 2 upstream default, 3 fast)"
+    depends on HERMES_BAKED_CONFIG
+    range 0 3
+    default 0
+
+config HERMES_STATE_IMAGES
+    bool "Show full-screen state illustrations instead of the avatar face"
+    depends on HERMES_BAKED_CONFIG
+    default y
+
+config HERMES_MICRO_WAKE_WORD
+    bool "Use on-device microWakeWord model (main/hal/hermes/assets/hermes_wei_eric.tflite)"
+    depends on HERMES_BAKED_CONFIG
+    default y
+
+endmenu
+
 menu "Xiaozhi Assistant"
 
 config OTA_URL

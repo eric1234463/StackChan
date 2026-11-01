@@ -289,8 +289,18 @@ if(CONFIG_IDF_TARGET_ESP32S3)
     list(APPEND SOURCES "${XIAOZHI_MAIN_DIR}/boards/common/esp32_camera.cc")
 endif()
 
+# Hermes build assets: state illustrations + wake word model (main/hal/hermes/assets)
+set(HERMES_ASSETS "")
+if(CONFIG_HERMES_STATE_IMAGES)
+    file(GLOB HERMES_STATE_PNGS ${CMAKE_CURRENT_SOURCE_DIR}/hal/hermes/assets/hermes_*.png)
+    list(APPEND HERMES_ASSETS ${HERMES_STATE_PNGS})
+endif()
+if(CONFIG_HERMES_MICRO_WAKE_WORD)
+    list(APPEND HERMES_ASSETS ${CMAKE_CURRENT_SOURCE_DIR}/hal/hermes/assets/hermes_wei_eric.tflite)
+endif()
+
 idf_component_register(SRCS ${SOURCES}
-                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
+                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS} ${HERMES_ASSETS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
                     WHOLE_ARCHIVE
                     PRIV_REQUIRES
