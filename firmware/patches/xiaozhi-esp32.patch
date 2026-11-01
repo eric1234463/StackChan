@@ -1,5 +1,5 @@
 diff --git a/main/application.cc b/main/application.cc
-index d69d43d..17eb8d9 100644
+index d69d43d..b51e728 100644
 --- a/main/application.cc
 +++ b/main/application.cc
 @@ -1,14 +1,15 @@
@@ -201,15 +201,16 @@ index d69d43d..17eb8d9 100644
              // Schedule to let the state change be processed first (UI update),
              // then continue with OpenAudioChannel which may block for ~1 second
              Schedule([this, wake_word]() {
-@@ -819,14 +830,42 @@ void Application::HandleWakeWordDetectedEvent() {
+@@ -819,14 +830,43 @@ void Application::HandleWakeWordDetectedEvent() {
      }
  }
  
 +// Hermes: open the channel in the background while idle (and after it drops), so the bridge can
 +// push announcements and a wake word skips the ~1 s connect. Retries back off 5 s -> 60 s.
 +void Application::MaintainIdleChannel() {
++    // esp_timer, not clock_ticks_: HandleStateChangedEvent resets clock_ticks_ on every state change.
 +    if (!protocol_ || GetDeviceState() != kDeviceStateIdle || protocol_->IsAudioChannelOpened() ||
-+        clock_ticks_ < next_connect_tick_) {
++        esp_timer_get_time() < next_connect_us_) {
 +        return;
 +    }
 +    auto& board = Board::GetInstance();
@@ -219,7 +220,7 @@ index d69d43d..17eb8d9 100644
 +    background_connecting_ = false;
 +    board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 +    connect_backoff_s_ = opened ? 5 : std::min(connect_backoff_s_ * 2, 60);
-+    next_connect_tick_ = clock_ticks_ + connect_backoff_s_;
++    next_connect_us_ = esp_timer_get_time() + int64_t(connect_backoff_s_) * 1000000;
 +    ESP_LOGI(TAG, "Background connect %s", opened ? "ok" : "failed");
 +}
 +
@@ -244,7 +245,7 @@ index d69d43d..17eb8d9 100644
              audio_service_.EnableWakeWordDetection(true);
              return;
          }
-@@ -869,6 +908,7 @@ void Application::HandleStateChangedEvent() {
+@@ -869,6 +909,7 @@ void Application::HandleStateChangedEvent() {
              display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
              audio_service_.EnableVoiceProcessing(false);
              audio_service_.EnableWakeWordDetection(true);
@@ -252,7 +253,7 @@ index d69d43d..17eb8d9 100644
              break;
          case kDeviceStateConnecting:
              display->SetStatus(Lang::Strings::CONNECTING);
-@@ -889,7 +929,13 @@ void Application::HandleStateChangedEvent() {
+@@ -889,7 +930,13 @@ void Application::HandleStateChangedEvent() {
                  
                  // Send the start listening command
                  protocol_->SendStartListening(listening_mode_);
@@ -267,7 +268,7 @@ index d69d43d..17eb8d9 100644
              }
  
  #ifdef CONFIG_WAKE_WORD_DETECTION_IN_LISTENING
-@@ -908,6 +954,7 @@ void Application::HandleStateChangedEvent() {
+@@ -908,6 +955,7 @@ void Application::HandleStateChangedEvent() {
              break;
          case kDeviceStateSpeaking:
              display->SetStatus(Lang::Strings::SPEAKING);
@@ -275,13 +276,13 @@ index d69d43d..17eb8d9 100644
  
              if (listening_mode_ != kListeningModeRealtime) {
                  audio_service_.EnableVoiceProcessing(false);
-@@ -1116,4 +1163,3 @@ void Application::ResetProtocol() {
+@@ -1116,4 +1164,3 @@ void Application::ResetProtocol() {
          protocol_.reset();
      });
  }
 -
 diff --git a/main/application.h b/main/application.h
-index 7ca7af4..f2fa3b2 100644
+index 7ca7af4..a3b79bb 100644
 --- a/main/application.h
 +++ b/main/application.h
 @@ -141,6 +141,10 @@ private:
@@ -291,7 +292,7 @@ index 7ca7af4..f2fa3b2 100644
 +    // Hermes: idle channel maintenance (see MaintainIdleChannel)
 +    bool background_connecting_ = false;
 +    int connect_backoff_s_ = 5;
-+    int next_connect_tick_ = 0;
++    int64_t next_connect_us_ = 0;
      TaskHandle_t activation_task_handle_ = nullptr;
  
  
