@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import difflib
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -25,6 +27,21 @@ DEFAULT_PROMPT = (
 # fails them and the last attempt is garbage such as "阿阿阿…", so those segments are dropped.
 MAX_COMPRESSION_RATIO = 2.4
 MIN_AVG_LOGPROB = -1.0
+# On steady noise whisper can also read back its own initial prompt verbatim.
+MAX_PROMPT_COVERAGE = 0.8
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[\W_]+", "", text).lower()
+
+
+def prompt_coverage(text: str, prompt: str) -> float:
+    """Share of the text made of runs (>= 4 chars) copied from the prompt."""
+    a, b = _norm(text), _norm(prompt)
+    if not a or not b:
+        return 0.0
+    blocks = difflib.SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks()
+    return sum(m.size for m in blocks if m.size >= 4) / len(a)
 
 # MLX binds GPU streams to the thread that first uses them, so every model call
 # goes through this one worker thread; it also serialises requests.
@@ -44,7 +61,8 @@ def _transcribe(model: str, audio: np.ndarray, language: str, prompt: str) -> st
     )
     kept = []
     for seg in result["segments"]:
-        if seg["compression_ratio"] > MAX_COMPRESSION_RATIO or seg["avg_logprob"] < MIN_AVG_LOGPROB:
+        if (seg["compression_ratio"] > MAX_COMPRESSION_RATIO or seg["avg_logprob"] < MIN_AVG_LOGPROB
+                or prompt_coverage(seg["text"], prompt) >= MAX_PROMPT_COVERAGE):
             _LOGGER.info("dropped segment cr=%.2f logprob=%.2f: %s",
                          seg["compression_ratio"], seg["avg_logprob"], seg["text"][:40])
         else:

@@ -22,7 +22,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request
 
 from . import services
-from .audio import FRAME_MS, IN_RATE, OUT_RATE, OpusDecoder, Vad, encode_opus_frames, normalize, rms
+from .audio import FRAME_MS, IN_RATE, OUT_RATE, OpusDecoder, Vad, encode_opus_frames, normalize, speech_rms
 from .config import Config
 from .text import clean, is_meaningful, split_sentences
 
@@ -163,7 +163,7 @@ class Session:
             return
         pcm = self.decoder.decode(packet)
         self.captured_ms += FRAME_MS
-        self.levels.append(rms(pcm))
+        self.levels.append(speech_rms(pcm))  # same measure as the VAD
         event = self.vad.feed(pcm)
         self.frames.append(pcm)
         if not self.vad.in_speech and event != "end":

@@ -842,12 +842,3 @@ uint8_t hal_bridge::board_get_speaker_volume()
     return volume;
 }
 
-void hal_bridge::toggle_xiaozhi_chat_state()
-{
-    auto& app = Application::GetInstance();
-    if (app.GetDeviceState() == kDeviceStateStarting) {
-        // EnterWifiConfigMode();
-        return;
-    }
-    app.ToggleChatState();
-}

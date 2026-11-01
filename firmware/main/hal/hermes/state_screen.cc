@@ -142,6 +142,12 @@ void OnUserTranscript()
     Refresh();
 }
 
+void OnTap()
+{
+    g_idle_since = esp_timer_get_time();
+    ScreenOn();
+}
+
 void OnAssistantSentence()
 {
     g_thinking = false;

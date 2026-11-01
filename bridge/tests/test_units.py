@@ -7,9 +7,9 @@ from stackchan_bridge.text import clean, is_meaningful, split_sentences
 FRAME = IN_RATE * FRAME_MS // 1000
 
 
-def tone(amplitude: float) -> bytes:
+def tone(amplitude: float, hz: float = 440) -> bytes:
     t = np.arange(FRAME) / IN_RATE
-    return (np.sin(2 * np.pi * 440 * t) * amplitude * 32767).astype(np.int16).tobytes()
+    return (np.sin(2 * np.pi * hz * t) * amplitude * 32767).astype(np.int16).tobytes()
 
 
 def test_vad_detects_start_and_end():
@@ -19,6 +19,12 @@ def test_vad_detects_start_and_end():
     events += [vad.feed(tone(0.0)) for _ in range(12)]
     assert events.count("start") == 1 and events.count("end") == 1
     assert events.index("start") < events.index("end")
+
+
+def test_vad_ignores_high_frequency_whine():
+    # Device whine measured 2026-11-02: ~4.5 kHz tone, full-band RMS 0.02-0.03, kept the VAD open forever.
+    vad = Vad(threshold=0.015, start_ms=180, end_silence_ms=900)
+    assert all(vad.feed(tone(0.04, hz=4500)) is None for _ in range(50)) and not vad.in_speech
 
 
 def test_vad_ignores_short_click():

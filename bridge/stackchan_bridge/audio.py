@@ -1,4 +1,4 @@
-"""Opus codec, resampling and a simple RMS voice-activity detector."""
+"""Opus codec, resampling and a simple speech-band RMS voice-activity detector."""
 from __future__ import annotations
 
 import os
@@ -52,8 +52,24 @@ def rms(pcm: bytes) -> float:
     return float(np.sqrt(np.mean(data * data))) if data.size else 0.0
 
 
+SPEECH_BAND_HZ = (300, 3400)
+
+
+def speech_rms(pcm: bytes, rate: int = IN_RATE) -> float:
+    """RMS of the 300-3400 Hz band only. The device emits a drifting ~4.5 kHz whine (90% of its energy
+    above 3 kHz) that is louder than the threshold in full-band RMS; in this band it is ~5% of that."""
+    data = np.frombuffer(pcm, np.int16).astype(np.float32) / 32768.0
+    if not data.size:
+        return 0.0
+    spectrum = np.fft.rfft(data)
+    freqs = np.fft.rfftfreq(data.size, 1 / rate)
+    spectrum[(freqs < SPEECH_BAND_HZ[0]) | (freqs > SPEECH_BAND_HZ[1])] = 0
+    band = np.fft.irfft(spectrum, data.size)
+    return float(np.sqrt(np.mean(band * band)))
+
+
 class Vad:
-    """RMS VAD over fixed-size frames. feed() returns 'start', 'end' or None."""
+    """Speech-band RMS VAD over fixed-size frames. feed() returns 'start', 'end' or None."""
 
     # SHORTCUT: fixed RMS threshold; switch to silero/webrtc VAD if noisy rooms cause false ends.
 
@@ -66,7 +82,7 @@ class Vad:
         self._silence_ms = 0
 
     def feed(self, pcm: bytes, frame_ms: int = FRAME_MS) -> str | None:
-        voiced = rms(pcm) >= self.threshold
+        voiced = speech_rms(pcm) >= self.threshold
         if not self.in_speech:
             self._voiced_ms = self._voiced_ms + frame_ms if voiced else 0
             if self._voiced_ms >= self.start_ms:

@@ -259,17 +259,11 @@ void StackChanAvatarDisplay::SetupUI()
 
     auto avatar = std::make_unique<DefaultAvatar>();
     avatar->init(lv_screen_active());
+    // Hermes: no tap-to-talk (only the wake word starts a chat); a tap just wakes the screen.
     avatar->getPanel()->onClick().connect([]() {
-        static uint32_t last_toggle_tick = 0;
-        const uint32_t now               = GetHAL().millis();
-        if (last_toggle_tick != 0 && now - last_toggle_tick < 2000) {
-            return;
-        }
-
-        if (hal_bridge::is_xiaozhi_ready()) {
-            last_toggle_tick = now;
-            hal_bridge::toggle_xiaozhi_chat_state();
-        }
+#if CONFIG_HERMES_STATE_IMAGES
+        hermes_screen::OnTap();
+#endif
     });
 
     stackchan.attachAvatar(std::move(avatar));
