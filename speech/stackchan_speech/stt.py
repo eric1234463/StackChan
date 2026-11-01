@@ -18,9 +18,13 @@ _LOGGER = logging.getLogger(__name__)
 RATE = 16000
 DEFAULT_MODEL = "WinsonLi/whisper-large-v3-cantonese-mlx-4bit"
 DEFAULT_PROMPT = (
-    "香港廣東話口語，英文技術詞保持英文：API、server、deploy、log、Docker、GitHub、"
-    "Wi-Fi、Home Assistant、Hermes、StackChan、42C。"
+    "香港廣東話口語。幫我開燈、熄燈，客廳燈、廁所燈、睡房燈、燈槽、冷氣、風扇有冇着？"
+    "英文詞保持英文：Home Assistant、Hermes、StackChan、server、log、Docker、42C。"
 )
+# Whisper's own decode-failure limits (mlx_whisper defaults). On noise every temperature
+# fails them and the last attempt is garbage such as "阿阿阿…", so those segments are dropped.
+MAX_COMPRESSION_RATIO = 2.4
+MIN_AVG_LOGPROB = -1.0
 
 # MLX binds GPU streams to the thread that first uses them, so every model call
 # goes through this one worker thread; it also serialises requests.
@@ -38,7 +42,14 @@ def _transcribe(model: str, audio: np.ndarray, language: str, prompt: str) -> st
         condition_on_previous_text=False,
         verbose=None,
     )
-    return result["text"].strip()
+    kept = []
+    for seg in result["segments"]:
+        if seg["compression_ratio"] > MAX_COMPRESSION_RATIO or seg["avg_logprob"] < MIN_AVG_LOGPROB:
+            _LOGGER.info("dropped segment cr=%.2f logprob=%.2f: %s",
+                         seg["compression_ratio"], seg["avg_logprob"], seg["text"][:40])
+        else:
+            kept.append(seg["text"])
+    return "".join(kept).strip()
 
 
 def make_info(model: str, language: str) -> Info:
