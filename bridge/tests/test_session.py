@@ -2,11 +2,12 @@
 import asyncio
 import json
 
+import httpx
 import numpy as np
 import pytest
 import websockets
 
-from stackchan_bridge import services
+from stackchan_bridge import server, services
 from stackchan_bridge.audio import FRAME_MS, IN_RATE, OUT_RATE, OpusDecoder, opuslib
 from stackchan_bridge.config import Config
 from stackchan_bridge.server import Backends, serve_forever
@@ -176,15 +177,69 @@ async def test_bad_token_rejected(bridge):
     assert err.value.response.status_code == 401
 
 
-async def test_silence_closes_session(bridge):
-    url = await bridge(Fakes())
+async def test_silence_sends_device_idle_and_keeps_connection(bridge):
+    fakes = Fakes()
+    url = await bridge(fakes)
     async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
         await handshake(ws)
         await ws.send(json.dumps({"type": "listen", "state": "start", "mode": "auto"}))
         for frame in opus_frames(0.0, 60):  # 3.6 s of silence > listen_timeout_ms 3000
             await ws.send(frame)
-        with pytest.raises(websockets.ConnectionClosed):
-            await asyncio.wait_for(ws.recv(), 5)
+        msg = json.loads(await asyncio.wait_for(ws.recv(), 5))
+        assert {k: msg[k] for k in ("type", "command")} == {"type": "system", "command": "idle"}
+        await talk(ws)  # still connected: the next wake word reuses this session
+        await collect_turn(ws)
+    assert fakes.asked == ["開客廳燈"]
+
+
+async def test_keepalive_reaches_idle_device(bridge, monkeypatch):
+    monkeypatch.setattr(server, "KEEPALIVE_S", 0.2)
+    url = await bridge(Fakes())
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        msg = json.loads(await asyncio.wait_for(ws.recv(), 2))
+    assert {k: msg[k] for k in ("type", "command")} == {"type": "system", "command": "keepalive"}
+
+
+def announce(url: str, text: str, token: str = TOKEN) -> httpx.Response:
+    base = url.split("/xiaozhi")[0].replace("ws://", "http://")
+    return httpx.get(f"{base}/announce", params={"text": text}, headers={"Authorization": f"Bearer {token}"})
+
+
+async def test_announce_speaks_on_connected_device(bridge):
+    fakes = Fakes()
+    url = await bridge(fakes)
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        response = await asyncio.to_thread(announce, url, "早晨。今日會落雨，記得帶遮。")
+        assert response.status_code == 202
+        texts, audio = await collect_turn(ws)
+    kinds = [(m["type"], m.get("state")) for m in texts]
+    assert kinds == [("llm", None), ("tts", "start"), ("tts", "sentence_start"), ("tts", "sentence_start"),
+                     ("tts", "stop")]
+    assert fakes.spoken == ["早晨。", "今日會落雨，記得帶遮。"] and fakes.asked == [] and audio
+
+
+async def test_announce_without_device_is_503(bridge):
+    url = await bridge(Fakes())
+    assert (await asyncio.to_thread(announce, url, "早晨")).status_code == 503
+
+
+async def test_announce_while_device_busy_is_409(bridge):
+    gate = asyncio.Event()
+    url = await bridge(Fakes(hermes_gate=gate))
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        await talk(ws)
+        while not isinstance(msg := await asyncio.wait_for(ws.recv(), 5), str) or json.loads(msg)["type"] != "stt":
+            pass  # wait until the turn is running
+        assert (await asyncio.to_thread(announce, url, "早晨")).status_code == 409
+        gate.set()
+
+
+async def test_announce_bad_token_is_401(bridge):
+    url = await bridge(Fakes())
+    assert (await asyncio.to_thread(announce, url, "早晨", token="wrong")).status_code == 401
 
 
 async def test_short_noise_burst_is_discarded_before_stt(bridge):

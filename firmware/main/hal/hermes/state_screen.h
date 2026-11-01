@@ -13,6 +13,6 @@ void OnDeviceState(DeviceState state);        // xiaozhi state machine changes
 void OnUserTranscript();                      // bridge sent `stt` -> thinking
 void OnAssistantSentence();                   // bridge sent `sentence_start` -> replying
 void OnEmotion(const char* emotion);          // `working` (ack played) or alert emotions: error / bridge unreachable
-void Tick(bool wifi_connected);               // ~1 Hz: Wi-Fi status and timed overlays
+void Tick(bool wifi_connected);               // ~1 Hz: Wi-Fi status, timed overlays, idle backlight off
 
 }  // namespace hermes_screen

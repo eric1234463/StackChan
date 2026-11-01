@@ -1,5 +1,5 @@
 diff --git a/main/application.cc b/main/application.cc
-index d69d43d..0877e5b 100644
+index d69d43d..17eb8d9 100644
 --- a/main/application.cc
 +++ b/main/application.cc
 @@ -1,14 +1,15 @@
@@ -34,7 +34,15 @@ index d69d43d..0877e5b 100644
              while (auto packet = audio_service_.PopPacketFromSendQueue()) {
                  if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
                      break;
-@@ -327,8 +329,13 @@ void Application::ActivationTask() {
+@@ -247,6 +249,7 @@ void Application::Run() {
+ 
+         if (bits & MAIN_EVENT_CLOCK_TICK) {
+             clock_ticks_++;
++            MaintainIdleChannel();
+             auto display = Board::GetInstance().GetDisplay();
+             display->UpdateStatusBar();
+         
+@@ -327,8 +330,13 @@ void Application::ActivationTask() {
      // Check for new assets version
      CheckAssetsVersion();
  
@@ -48,7 +56,7 @@ index d69d43d..0877e5b 100644
  
      // Initialize the protocol
      InitializeProtocol();
-@@ -399,6 +406,7 @@ void Application::CheckNewVersion() {
+@@ -399,6 +407,7 @@ void Application::CheckNewVersion() {
      const int MAX_RETRY = 10;
      int retry_count = 0;
      int retry_delay = 10; // Initial retry delay in seconds
@@ -56,7 +64,7 @@ index d69d43d..0877e5b 100644
  
      auto& board = Board::GetInstance();
      while (true) {
-@@ -441,15 +449,18 @@ void Application::CheckNewVersion() {
+@@ -441,15 +450,18 @@ void Application::CheckNewVersion() {
  
          // No new version, mark the current version as valid
          ota_->MarkCurrentVersionValid();
@@ -79,7 +87,7 @@ index d69d43d..0877e5b 100644
          }
  
          // This will block the loop until the activation is done or timeout
-@@ -477,6 +488,9 @@ void Application::InitializeProtocol() {
+@@ -477,6 +489,9 @@ void Application::InitializeProtocol() {
  
      display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
  
@@ -89,7 +97,7 @@ index d69d43d..0877e5b 100644
      if (ota_->HasMqttConfig()) {
          protocol_ = std::make_unique<MqttProtocol>();
      } else if (ota_->HasWebsocketConfig()) {
-@@ -485,6 +499,7 @@ void Application::InitializeProtocol() {
+@@ -485,12 +500,17 @@ void Application::InitializeProtocol() {
          ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
          protocol_ = std::make_unique<MqttProtocol>();
      }
@@ -97,7 +105,36 @@ index d69d43d..0877e5b 100644
  
      protocol_->OnConnected([this]() {
          DismissAlert();
-@@ -609,36 +624,6 @@ void Application::InitializeProtocol() {
+     });
+ 
+     protocol_->OnNetworkError([this](const std::string& message) {
++        if (background_connecting_) {
++            ESP_LOGW(TAG, "Background connect failed: %s", message.c_str());  // Hermes: retried silently
++            return;
++        }
+         last_error_message_ = message;
+         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
+     });
+@@ -571,7 +591,17 @@ void Application::InitializeProtocol() {
+             auto command = cJSON_GetObjectItem(root, "command");
+             if (cJSON_IsString(command)) {
+                 ESP_LOGI(TAG, "System command: %s", command->valuestring);
+-                if (strcmp(command->valuestring, "reboot") == 0) {
++                if (strcmp(command->valuestring, "keepalive") == 0) {
++                    // Hermes: JSON traffic keeps the idle channel inside Protocol::IsTimeout (120 s).
++                } else if (strcmp(command->valuestring, "idle") == 0) {
++                    // Hermes: end the conversation but keep the channel open for announcements.
++                    Schedule([this]() {
++                        auto state = GetDeviceState();
++                        if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
++                            SetDeviceState(kDeviceStateIdle);
++                        }
++                    });
++                } else if (strcmp(command->valuestring, "reboot") == 0) {
+                     // Do a reboot if user requests a OTA update
+                     Schedule([this]() {
+                         Reboot();
+@@ -609,36 +639,6 @@ void Application::InitializeProtocol() {
      protocol_->Start();
  }
  
@@ -134,7 +171,7 @@ index d69d43d..0877e5b 100644
  void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
      ESP_LOGW(TAG, "Alert [%s] %s: %s", emotion, status, message);
      auto display = Board::GetInstance().GetDisplay();
-@@ -716,8 +701,13 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
+@@ -716,8 +716,13 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
          return;
      }
  
@@ -148,18 +185,47 @@ index d69d43d..0877e5b 100644
              return;
          }
      }
-@@ -787,6 +777,10 @@ void Application::HandleWakeWordDetectedEvent() {
+@@ -786,8 +791,14 @@ void Application::HandleWakeWordDetectedEvent() {
+         audio_service_.EncodeWakeWord();
          auto wake_word = audio_service_.GetLastWakeWord();
  
++        // Hermes: capture into the send queue (max 2.4 s) while the channel opens, so speech
++        // started right after the wake word is not lost; it is flushed once listening starts.
++        while (audio_service_.PopPacketFromSendQueue());
++        audio_service_.EnableVoiceProcessing(true);
++        // Hermes: also when the channel is already open (kept open while idle), since
++        // ContinueWakeWordInvoke only proceeds from Connecting.
++        SetDeviceState(kDeviceStateConnecting);
          if (!protocol_->IsAudioChannelOpened()) {
-+            // Hermes: capture into the send queue (max 2.4 s) while the channel opens, so speech
-+            // started right after the wake word is not lost; it is flushed once listening starts.
-+            while (audio_service_.PopPacketFromSendQueue());
-+            audio_service_.EnableVoiceProcessing(true);
-             SetDeviceState(kDeviceStateConnecting);
+-            SetDeviceState(kDeviceStateConnecting);
              // Schedule to let the state change be processed first (UI update),
              // then continue with OpenAudioChannel which may block for ~1 second
-@@ -825,8 +819,18 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+             Schedule([this, wake_word]() {
+@@ -819,14 +830,42 @@ void Application::HandleWakeWordDetectedEvent() {
+     }
+ }
+ 
++// Hermes: open the channel in the background while idle (and after it drops), so the bridge can
++// push announcements and a wake word skips the ~1 s connect. Retries back off 5 s -> 60 s.
++void Application::MaintainIdleChannel() {
++    if (!protocol_ || GetDeviceState() != kDeviceStateIdle || protocol_->IsAudioChannelOpened() ||
++        clock_ticks_ < next_connect_tick_) {
++        return;
++    }
++    auto& board = Board::GetInstance();
++    board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);  // handshake must not run in MAX_MODEM
++    background_connecting_ = true;
++    bool opened = protocol_->OpenAudioChannel();
++    background_connecting_ = false;
++    board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
++    connect_backoff_s_ = opened ? 5 : std::min(connect_backoff_s_ * 2, 60);
++    next_connect_tick_ = clock_ticks_ + connect_backoff_s_;
++    ESP_LOGI(TAG, "Background connect %s", opened ? "ok" : "failed");
++}
++
+ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+     // Check state again in case it was changed during scheduling
+     if (GetDeviceState() != kDeviceStateConnecting) {
          return;
      }
  
@@ -178,7 +244,15 @@ index d69d43d..0877e5b 100644
              audio_service_.EnableWakeWordDetection(true);
              return;
          }
-@@ -889,7 +893,13 @@ void Application::HandleStateChangedEvent() {
+@@ -869,6 +908,7 @@ void Application::HandleStateChangedEvent() {
+             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
+             audio_service_.EnableVoiceProcessing(false);
+             audio_service_.EnableWakeWordDetection(true);
++            board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);  // Hermes: idle channel stays open
+             break;
+         case kDeviceStateConnecting:
+             display->SetStatus(Lang::Strings::CONNECTING);
+@@ -889,7 +929,13 @@ void Application::HandleStateChangedEvent() {
                  
                  // Send the start listening command
                  protocol_->SendStartListening(listening_mode_);
@@ -193,16 +267,43 @@ index d69d43d..0877e5b 100644
              }
  
  #ifdef CONFIG_WAKE_WORD_DETECTION_IN_LISTENING
-@@ -1116,4 +1126,3 @@ void Application::ResetProtocol() {
+@@ -908,6 +954,7 @@ void Application::HandleStateChangedEvent() {
+             break;
+         case kDeviceStateSpeaking:
+             display->SetStatus(Lang::Strings::SPEAKING);
++            board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);  // Hermes: announcements start from idle
+ 
+             if (listening_mode_ != kListeningModeRealtime) {
+                 audio_service_.EnableVoiceProcessing(false);
+@@ -1116,4 +1163,3 @@ void Application::ResetProtocol() {
          protocol_.reset();
      });
  }
 -
 diff --git a/main/application.h b/main/application.h
-index 7ca7af4..1418901 100644
+index 7ca7af4..f2fa3b2 100644
 --- a/main/application.h
 +++ b/main/application.h
-@@ -163,7 +163,6 @@ private:
+@@ -141,6 +141,10 @@ private:
+     bool assets_version_checked_ = false;
+     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
+     int clock_ticks_ = 0;
++    // Hermes: idle channel maintenance (see MaintainIdleChannel)
++    bool background_connecting_ = false;
++    int connect_backoff_s_ = 5;
++    int next_connect_tick_ = 0;
+     TaskHandle_t activation_task_handle_ = nullptr;
+ 
+ 
+@@ -155,6 +159,7 @@ private:
+     void HandleWakeWordDetectedEvent();
+     void ContinueOpenAudioChannel(ListeningMode mode);
+     void ContinueWakeWordInvoke(const std::string& wake_word);
++    void MaintainIdleChannel();
+ 
+     // Activation task (runs in background)
+     void ActivationTask();
+@@ -163,7 +168,6 @@ private:
      void CheckAssetsVersion();
      void CheckNewVersion();
      void InitializeProtocol();

@@ -2,6 +2,7 @@
 #if CONFIG_HERMES_STATE_IMAGES
 #include "state_screen.h"
 
+#include <board.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <lvgl.h>
@@ -28,6 +29,7 @@ HERMES_PNG(no_ha)
 
 constexpr int64_t kErrorShowUs = 3 * 1000 * 1000;
 constexpr int64_t kNoHaShowUs  = 10 * 1000 * 1000;
+constexpr int64_t kScreenOffUs = 5 * 60 * 1000 * 1000;  // idle this long -> backlight off
 
 lv_image_dsc_t g_dsc[kImageCount];
 lv_obj_t* g_image       = nullptr;
@@ -38,6 +40,15 @@ bool g_working          = false;  // ack played, waiting for Hermes
 bool g_wifi_ok          = true;
 int64_t g_error_until   = 0;
 int64_t g_no_ha_until   = 0;
+int64_t g_idle_since    = 0;
+bool g_screen_off       = false;
+
+void ScreenOn()
+{
+    if (!g_screen_off) return;
+    g_screen_off = false;
+    if (auto* backlight = Board::GetInstance().GetBacklight()) backlight->RestoreBrightness();
+}
 
 void Describe(Image id, const uint8_t* start, const uint8_t* end)
 {
@@ -117,6 +128,11 @@ void OnDeviceState(DeviceState state)
     }
     if (state == kDeviceStateListening || state == kDeviceStateSpeaking) g_no_ha_until = 0;  // bridge reachable
     g_state = state;
+    if (state == kDeviceStateIdle) {
+        g_idle_since = esp_timer_get_time();
+    } else {
+        ScreenOn();  // wake word, tap or announcement
+    }
     Refresh();
 }
 
@@ -153,6 +169,12 @@ void Tick(bool wifi_connected)
 {
     g_wifi_ok = wifi_connected;
     Refresh();  // also expires timed error / no_ha overlays
+    if (!g_screen_off && g_state == kDeviceStateIdle && esp_timer_get_time() - g_idle_since > kScreenOffUs) {
+        if (auto* backlight = Board::GetInstance().GetBacklight()) {
+            backlight->SetBrightness(0);  // not permanent: RestoreBrightness() brings back the saved level
+            g_screen_off = true;
+        }
+    }
 }
 
 }  // namespace hermes_screen

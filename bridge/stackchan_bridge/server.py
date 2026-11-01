@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import json
 import logging
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
 from typing import Awaitable, Callable
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import numpy as np
@@ -29,6 +31,11 @@ log = logging.getLogger("stackchan_bridge")
 WS_PATH = "/xiaozhi/v1"
 PREROLL_MS = 300  # kept before voice onset so the first syllable is not cut
 SEND_LEAD_FRAMES = 5  # frames sent ahead of real time to absorb Wi-Fi jitter
+ANNOUNCE_PATH = "/announce"
+# The device counts only JSON as traffic and drops a channel silent for 120 s (pings do not count).
+KEEPALIVE_S = 60
+# The device accepts audio only once in Speaking, and wakes from Wi-Fi modem sleep every DTIM period.
+ANNOUNCE_LEAD_S = 0.3
 
 
 @dataclass
@@ -97,7 +104,22 @@ class Session:
     async def send_json(self, **msg) -> None:
         await self.ws.send(json.dumps({"session_id": self.session_id, **msg}, ensure_ascii=False))
 
+    @property
+    def busy(self) -> bool:
+        return self.capturing or (self.turn is not None and not self.turn.done())
+
+    def announce(self, text: str) -> None:
+        """Speak text unprompted (Hermes cron); the device then listens for a follow-up as after any reply."""
+        self.turn = asyncio.create_task(
+            self.speak(asyncio.sleep(ANNOUNCE_LEAD_S, result=clean(text)), time.monotonic(), with_ack=False))
+
+    async def keepalive(self) -> None:
+        while True:
+            await asyncio.sleep(KEEPALIVE_S)
+            await self.send_json(type="system", command="keepalive")
+
     async def run(self) -> None:
+        keepalive = asyncio.create_task(self.keepalive())
         try:
             async for message in self.ws:
                 if isinstance(message, bytes):
@@ -107,6 +129,7 @@ class Session:
         except ConnectionClosed:
             pass
         finally:
+            keepalive.cancel()
             if self.turn and not self.turn.done():
                 self.turn.cancel()
 
@@ -143,11 +166,10 @@ class Session:
             # VAD fires only after vad_start_speech_ms of voice, so keep that much plus the pre-roll.
             self.frames = self.frames[-((PREROLL_MS + self.cfg.vad_start_speech_ms) // FRAME_MS):]
             if self.captured_ms > self.cfg.listen_timeout_ms:
-                log.info("no speech for %d ms, closing session", self.cfg.listen_timeout_ms)
+                log.info("no speech for %d ms, device to idle", self.cfg.listen_timeout_ms)
                 self.capturing = False
-                # Close in the background: the loop must keep draining in-flight frames,
-                # otherwise the device's close reply sits unread until close_timeout.
-                asyncio.create_task(self.ws.close())
+                # The connection stays open so announcements can reach the idle device.
+                asyncio.create_task(self.send_json(type="system", command="idle"))
             return
         if event == "end" or len(self.frames) * FRAME_MS >= self.cfg.max_utterance_ms:
             await self.end_utterance("silence" if event == "end" else "max length")
@@ -205,22 +227,24 @@ class Session:
             reply = self.cfg.fallback_text
         return clean(reply)
 
-    async def speak(self, reply: Awaitable[str], t0: float) -> None:
+    async def speak(self, reply: Awaitable[str], t0: float, with_ack: bool = True) -> None:
         """One TTS session around ack + reply, so the device stays in Speaking (mic off) while Hermes works."""
         await self.send_json(type="llm", emotion="neutral")
         await self.send_json(type="tts", state="start")
         try:
-            ack = await self.ack.get()
-            if ack:
-                log.info("ack audio %d ms after end of speech", int((time.monotonic() - t0) * 1000))
-                await self.stream(_once(ack))
-            await self.send_json(type="llm", emotion="working")
+            if with_ack:
+                ack = await self.ack.get()
+                if ack:
+                    log.info("ack audio %d ms after end of speech", int((time.monotonic() - t0) * 1000))
+                    await self.stream(_once(ack))
+                await self.send_json(type="llm", emotion="working")
             await self.stream(self.reply_sentences(await reply, t0))
         except services.ServiceError as exc:
             log.error("turn failed at TTS: %s", exc)
             await self.send_json(type="alert", status="error", message="TTS error", emotion="sad")
         finally:
-            await self.send_json(type="tts", state="stop")
+            with contextlib.suppress(ConnectionClosed):  # device left mid-reply; nothing to stop
+                await self.send_json(type="tts", state="stop")
 
     async def reply_sentences(self, text: str, t0: float):
         for i, sentence in enumerate(split_sentences(text)):
@@ -259,33 +283,61 @@ def save_wav(directory: str, pcm: bytes) -> None:
         w.writeframes(pcm)
 
 
-def make_auth_check(cfg: Config):
+def make_auth_check(cfg: Config, sessions: set[Session]):
     expected = f"Bearer {cfg.device_token}".encode()
 
     def process_request(connection: ServerConnection, request: Request):
-        if not request.path.rstrip("/").startswith(WS_PATH):
+        url = urlsplit(request.path)
+        path = url.path.rstrip("/")
+        if not (path.startswith(WS_PATH) or path == ANNOUNCE_PATH):
             return connection.respond(HTTPStatus.NOT_FOUND, "not found\n")
         given = request.headers.get("Authorization", "").encode()
         if not hmac.compare_digest(given, expected):
             log.warning("rejected connection from %s: bad token", connection.remote_address[0])
             return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
+        if path == ANNOUNCE_PATH:
+            return announce(connection, parse_qs(url.query).get("text", [""])[0], sessions)
         return None
 
     return process_request
+
+
+def announce(connection: ServerConnection, text: str, sessions: set[Session]):
+    """GET /announce?text=... (plain HTTP on the WebSocket port, loopback only): speak on every idle device."""
+    if connection.remote_address[0] not in ("127.0.0.1", "::1"):
+        return connection.respond(HTTPStatus.FORBIDDEN, "announce is loopback only\n")
+    if not text.strip():
+        return connection.respond(HTTPStatus.BAD_REQUEST, "text is required\n")
+    if not sessions:
+        return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "no device connected\n")
+    idle = [s for s in sessions if not s.busy]
+    if not idle:
+        # SHORTCUT: rejects while a conversation runs; queue until the turn ends if cron collisions matter.
+        return connection.respond(HTTPStatus.CONFLICT, "device busy\n")
+    log.info("announce to %d device(s): %s", len(idle), text)
+    for session in idle:
+        session.announce(text)
+    return connection.respond(HTTPStatus.ACCEPTED, f"announced to {len(idle)} device(s)\n")
 
 
 async def serve_forever(cfg: Config, backends: Backends | None = None, ready: asyncio.Event | None = None) -> None:
     async with httpx.AsyncClient() as http:
         backends = backends or real_backends(cfg, http)
         ack = AckAudio(cfg.ack_text, backends.synthesize)
+        sessions: set[Session] = set()
 
         async def handler(ws: ServerConnection) -> None:
             log.info("device connected from %s", ws.remote_address[0])
-            await Session(ws, cfg, backends, ack).run()
+            session = Session(ws, cfg, backends, ack)
+            sessions.add(session)
+            try:
+                await session.run()
+            finally:
+                sessions.discard(session)
             log.info("device disconnected")
 
-        async with serve(handler, cfg.host, cfg.port, process_request=make_auth_check(cfg),
-                         max_size=2**20, ping_interval=20,
+        async with serve(handler, cfg.host, cfg.port, process_request=make_auth_check(cfg, sessions),
+                         max_size=2**20, ping_interval=60,
                          # The device never answers the close frame; the 10 s default kept it "listening".
                          close_timeout=1) as server:
             log.info("listening on %s:%d%s/", cfg.host, cfg.port, WS_PATH)
