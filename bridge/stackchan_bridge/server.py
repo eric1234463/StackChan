@@ -92,6 +92,8 @@ class Session:
         self.session_id = uuid.uuid4().hex
         self.decoder = OpusDecoder()
         self.capturing = False
+        self.replied = False  # the next listen is the device re-listening after a reply (follow-up)
+        self.timeout_ms = cfg.listen_timeout_ms
         self.turn: asyncio.Task | None = None
         self._reset_capture()
 
@@ -142,6 +144,8 @@ class Session:
             state = msg.get("state")
             if state == "start":
                 self.capturing = True
+                self.timeout_ms = self.cfg.followup_timeout_ms if self.replied else self.cfg.listen_timeout_ms
+                self.replied = False
                 self._reset_capture()
             elif state == "stop" and self.capturing:
                 await self.end_utterance("device stop")
@@ -165,8 +169,8 @@ class Session:
         if not self.vad.in_speech and event != "end":
             # VAD fires only after vad_start_speech_ms of voice, so keep that much plus the pre-roll.
             self.frames = self.frames[-((PREROLL_MS + self.cfg.vad_start_speech_ms) // FRAME_MS):]
-            if self.captured_ms > self.cfg.listen_timeout_ms:
-                log.info("no speech for %d ms, device to idle", self.cfg.listen_timeout_ms)
+            if self.captured_ms > self.timeout_ms:
+                log.info("no speech for %d ms, device to idle", self.timeout_ms)
                 self.capturing = False
                 # The connection stays open so announcements can reach the idle device.
                 asyncio.create_task(self.send_json(type="system", command="idle"))
@@ -243,6 +247,7 @@ class Session:
             log.error("turn failed at TTS: %s", exc)
             await self.send_json(type="alert", status="error", message="TTS error", emotion="sad")
         finally:
+            self.replied = True
             with contextlib.suppress(ConnectionClosed):  # device left mid-reply; nothing to stop
                 await self.send_json(type="tts", state="stop")
 

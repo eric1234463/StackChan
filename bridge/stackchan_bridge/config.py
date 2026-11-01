@@ -35,7 +35,8 @@ class Config:
     min_voiced_ms: int = 300  # utterances with less voiced audio are noise (whisper hallucinates on them)
     vad_end_silence_ms: int = 900  # 700 ms cut sentences at pauses; 1200 ms felt slow to close
     max_utterance_ms: int = 15000
-    listen_timeout_ms: int = 8000
+    listen_timeout_ms: int = 8000  # after the wake word: time to start talking
+    followup_timeout_ms: int = 4000  # after a reply or announcement: window for a follow-up question
     fallback_text: str = "我而家連唔到 Hermes。"
     ack_text: str = "收到，幫緊你。"  # spoken while Hermes works; empty disables
     debug_audio_dir: str = ""  # if set, each utterance is saved as WAV there (local debugging only)
@@ -82,6 +83,7 @@ def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Con
         vad_end_silence_ms=int(env.get("VAD_END_SILENCE_MS", defaults.vad_end_silence_ms)),
         max_utterance_ms=int(env.get("MAX_UTTERANCE_MS", defaults.max_utterance_ms)),
         listen_timeout_ms=int(env.get("LISTEN_TIMEOUT_MS", defaults.listen_timeout_ms)),
+        followup_timeout_ms=int(env.get("FOLLOWUP_TIMEOUT_MS", defaults.followup_timeout_ms)),
         debug_audio_dir=env.get("BRIDGE_DEBUG_AUDIO_DIR", ""),
         ack_text=env.get("ACK_TEXT", defaults.ack_text),
     )

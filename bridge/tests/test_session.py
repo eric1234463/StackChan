@@ -56,7 +56,7 @@ async def bridge(unused_tcp_port):
 
     async def start(fakes: Fakes):
         cfg = Config(device_token=TOKEN, hermes_api_key="unused", host="127.0.0.1", port=unused_tcp_port,
-                     listen_timeout_ms=3000)
+                     listen_timeout_ms=3000, followup_timeout_ms=1000)
         ready = asyncio.Event()
         task = asyncio.create_task(serve_forever(cfg, fakes.backends(), ready))
         started.append(task)
@@ -190,6 +190,24 @@ async def test_silence_sends_device_idle_and_keeps_connection(bridge):
         await talk(ws)  # still connected: the next wake word reuses this session
         await collect_turn(ws)
     assert fakes.asked == ["開客廳燈"]
+
+
+async def test_follow_up_window_is_shorter_than_wake_window(bridge):
+    url = await bridge(Fakes())  # fixture: listen 3000 ms, follow-up 1000 ms
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        await talk(ws)
+        await collect_turn(ws)
+        await ws.send(json.dumps({"type": "listen", "state": "start", "mode": "auto"}))  # device re-listens
+        for frame in opus_frames(0.0, 25):  # 1.5 s of silence: past follow-up, inside the wake window
+            await ws.send(frame)
+        msg = json.loads(await asyncio.wait_for(ws.recv(), 5))
+        assert msg.get("command") == "idle"
+        await ws.send(json.dumps({"type": "listen", "state": "start", "mode": "auto"}))  # next wake word
+        for frame in opus_frames(0.0, 25):
+            await ws.send(frame)
+        with pytest.raises(asyncio.TimeoutError):  # 1.5 s < 3 s wake window: still listening
+            await asyncio.wait_for(ws.recv(), 0.5)
 
 
 async def test_keepalive_reaches_idle_device(bridge, monkeypatch):
