@@ -31,7 +31,7 @@ See §9 for decommissioning.
 |---|---|---|
 | Custom wake word `喂Eric` (source of truth) | `/Users/eric/personal-project/wakeword-喂Eric/wei_eric.tflite` + `training_parameters.yaml` | microWakeWord, trained `window_step_ms 10`, `clip_duration_ms 1500`. Runtime params (from the ESPHome manifest `stackchan-fw/wei_eric.json`, same model SHA-1 `5f0c5397…`): `probability_cutoff 0.2`, `sliding_window_size 5`, `tensor_arena_size 80000` |
 | STT (Cantonese) | launchd `space.hermes.whisper-yue`, `speech/stackchan_speech/stt.py` (installed by `speech/install.sh`) | Wyoming `tcp://0.0.0.0:10300`, `mlx-whisper`, model `WinsonLi/whisper-large-v3-cantonese-mlx-4bit`, ~0.2 s per utterance |
-| TTS (Cantonese) | launchd `space.hermes.canto-tts`, `speech/stackchan_speech/tts.py` (installed by `speech/install.sh`) | Wyoming `tcp://0.0.0.0:10201`, sherpa-onnx VITS voice `yue_HK-xiaomaiiwn-medium`, 16-bit mono PCM |
+| TTS (Cantonese) | launchd `space.hermes.canto-tts`, `speech/stackchan_speech/tts.py` (installed by `speech/install.sh`) | Wyoming `tcp://0.0.0.0:10201`, Qwen3-TTS 1.7B + HK Cantonese LoRA (MLX 8-bit), voice `hk_voice_343`, 24 kHz 16-bit mono PCM; RTF ~0.2-0.3 |
 | TTS (Mandarin, unused) | launchd `space.hermes.piper-tts` | Wyoming `:10200`, `zh_CN-chaowen-medium` |
 | Hermes agent | profile `homeassistant`, gateway running | `api_server` platform (OpenAI-compatible, default port `8642`) — **not enabled yet** (only `webhook :8644` is on) |
 

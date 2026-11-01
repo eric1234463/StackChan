@@ -1,8 +1,11 @@
-"""Minimal Wyoming TTS server wrapping sherpa-onnx Cantonese VITS."""
+"""Wyoming TTS server wrapping Qwen3-TTS 1.7B + HK Cantonese LoRA (merged, MLX 8-bit)."""
 import argparse
 import asyncio
 import logging
+import re
 import socket
+import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 import numpy as np
@@ -13,56 +16,84 @@ from wyoming.server import AsyncEventHandler, AsyncServer
 from wyoming.tts import Synthesize
 
 _LOGGER = logging.getLogger(__name__)
-_TTS = None
-_TTS_LOCK = asyncio.Lock()
+_MODEL = None
+# MLX binds GPU streams to the thread that first uses them; one worker also serialises requests.
+_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
 
-VOICE_NAME = "yue_HK-xiaomaiiwn-medium"
+RATE = 24000
+VOICE_NAME = "hk_voice_343"
+MAX_CHUNK_CHARS = 45  # model card: longer inputs drop words; split at punctuation
+LEAD_KEEP_S, TAIL_KEEP_S = 0.04, 0.15  # every generation starts with 0.5-1.2 s of silence
+SECONDS_PER_CHAR_MAX = 0.4  # measured ~0.25-0.3 s per Cantonese character
+MAX_ATTEMPTS = 3
 
 
-def load_tts(model_dir: str):
-    global _TTS
-    if _TTS is not None:
-        return _TTS
-    import sherpa_onnx
-    _TTS = sherpa_onnx.OfflineTts(
-        sherpa_onnx.OfflineTtsConfig(
-            model=sherpa_onnx.OfflineTtsModelConfig(
-                vits=sherpa_onnx.OfflineTtsVitsModelConfig(
-                    model=f"{model_dir}/vits-cantonese-hf-xiaomaiiwn.onnx",
-                    lexicon=f"{model_dir}/lexicon.txt",
-                    tokens=f"{model_dir}/tokens.txt",
-                )
-            )
-        )
-    )
-    return _TTS
+def load(model_dir: str):
+    global _MODEL
+    if _MODEL is None:
+        from mlx_audio.tts.utils import load_model
+        _MODEL = load_model(model_dir)
+    return _MODEL
+
+
+def chunks(text: str) -> list[str]:
+    """Split at sentence punctuation, then at commas, into pieces of at most MAX_CHUNK_CHARS."""
+    out: list[str] = []
+    for sentence in re.findall(r"[^。！？!?\n]+[。！？!?]*", text):
+        piece = ""
+        for clause in re.findall(r"[^，、；,;]+[，、；,;]*", sentence):
+            if piece and len(piece) + len(clause) > MAX_CHUNK_CHARS:
+                out.append(piece)
+                piece = ""
+            piece += clause
+            while len(piece) > MAX_CHUNK_CHARS:  # a single clause that is still too long
+                out.append(piece[:MAX_CHUNK_CHARS])
+                piece = piece[MAX_CHUNK_CHARS:]
+        if piece.strip():
+            out.append(piece)
+    return [c.strip() for c in out if c.strip()]
+
+
+def trim(audio: np.ndarray) -> np.ndarray:
+    """Cut the generated lead-in/trailing silence (20 ms frames, 40 dB below peak)."""
+    frame = int(RATE * 0.02)
+    energy = np.sqrt([np.mean(audio[i:i + frame] ** 2) for i in range(0, max(len(audio) - frame, 1), frame)])
+    voiced = np.where(energy > max(float(energy.max()) * 0.01, 1e-4))[0]
+    if voiced.size == 0:
+        return audio[:0]
+    start = max(voiced[0] * frame - int(RATE * LEAD_KEEP_S), 0)
+    end = min((voiced[-1] + 1) * frame + int(RATE * TAIL_KEEP_S), len(audio))
+    return audio[start:end]
+
+
+def synth_chunk(model_dir: str, text: str) -> bytes:
+    model = load(model_dir)
+    # Sampling sometimes keeps talking after the text ("收到，幫緊你" + 3 s of babble); far too long = retry.
+    limit_s = len(re.sub(r"\W", "", text)) * SECONDS_PER_CHAR_MAX + 1.0
+    best = None
+    for attempt in range(MAX_ATTEMPTS):
+        audio = trim(np.concatenate([np.array(r.audio, dtype=np.float32)
+                                     for r in model.generate(text=text, voice=VOICE_NAME, lang_code="chinese")]))
+        if best is None or len(audio) < len(best):
+            best = audio
+        if len(audio) / RATE <= limit_s:
+            break
+        _LOGGER.warning("attempt %d: %.1fs audio for %d chars, retrying: %s", attempt + 1, len(audio) / RATE, len(text), text)
+    return (np.clip(best, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
 
 
 def make_info() -> Info:
-    return Info(
-        tts=[
-            TtsProgram(
-                name="canto-vits",
-                description="Local Cantonese VITS (sherpa-onnx)",
-                attribution=Attribution(name="csukuangfj", url="https://huggingface.co/csukuangfj/vits-cantonese-hf-xiaomaiiwn"),
-                installed=True,
-                version="1.0",
-                voices=[
-                    TtsVoice(
-                        name=VOICE_NAME,
-                        description="Cantonese female (xiaomaiiwn)",
-                        attribution=Attribution(name="csukuangfj", url=""),
-                        installed=True,
-                        version="1.0",
-                        languages=["yue", "zh-HK", "zh"],
-                    )
-                ],
-            )
-        ],
-    )
+    attribution = Attribution(name="jmtl", url="https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts")
+    return Info(tts=[TtsProgram(
+        name="qwen3-tts-hk", description="Qwen3-TTS 1.7B + HK Cantonese LoRA (MLX 8-bit)",
+        attribution=attribution, installed=True, version="0.0.5",
+        voices=[TtsVoice(name=VOICE_NAME, description="HK Cantonese female (synthetic, Common Voice CC-0 donor)",
+                         attribution=attribution, installed=True, version="0.0.5",
+                         languages=["yue", "zh-HK", "zh"])],
+    )])
 
 
-class CantoEventHandler(AsyncEventHandler):
+class TtsHandler(AsyncEventHandler):
     def __init__(self, *args, model_dir: str, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.model_dir = model_dir
@@ -72,23 +103,17 @@ class CantoEventHandler(AsyncEventHandler):
             await self.write_event(make_info().event())
             return True
         if Synthesize.is_type(event.type):
-            synth = Synthesize.from_event(event)
-            async with _TTS_LOCK:
-                tts = await asyncio.to_thread(load_tts, self.model_dir)
-                audio = await asyncio.to_thread(
-                    tts.generate, synth.text, 0, 1.0
-                )
-            rate = audio.sample_rate
-            samples = (np.array(audio.samples) * 32767).astype(np.int16)
-            await self.write_event(
-                AudioStart(rate=rate, width=2, channels=1).event()
-            )
-            await self.write_event(
-                AudioChunk(
-                    audio=samples.tobytes(), rate=rate, width=2, channels=1
-                ).event()
-            )
+            text = Synthesize.from_event(event).text
+            loop = asyncio.get_running_loop()
+            started = time.monotonic()
+            await self.write_event(AudioStart(rate=RATE, width=2, channels=1).event())
+            samples = 0
+            for piece in chunks(text):  # stream chunk by chunk so long replies start sooner
+                pcm = await loop.run_in_executor(_EXECUTOR, synth_chunk, self.model_dir, piece)
+                samples += len(pcm) // 2
+                await self.write_event(AudioChunk(audio=pcm, rate=RATE, width=2, channels=1).event())
             await self.write_event(AudioStop().event())
+            _LOGGER.info("synthesized %.1fs audio in %.2fs: %s", samples / RATE, time.monotonic() - started, text)
             return True
         return False
 
@@ -97,15 +122,14 @@ async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--uri", default="tcp://0.0.0.0:10201")
     parser.add_argument("--model-dir", required=True,
-                        help="Directory with vits-cantonese-hf-xiaomaiiwn.onnx, lexicon.txt, tokens.txt")
+                        help="Merged Qwen3-TTS HK Cantonese MLX model (apply_adapter.py + mlx_audio.convert)")
     parser.add_argument("--zeroconf", nargs="?", const="canto-tts",
                         help="Advertise via zeroconf for HA auto-discovery")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    _LOGGER.info("Preloading Cantonese TTS model...")
-    await asyncio.to_thread(load_tts, args.model_dir)
+    _LOGGER.info("Loading %s", args.model_dir)
+    await asyncio.get_running_loop().run_in_executor(_EXECUTOR, synth_chunk, args.model_dir, "你好。")  # warm-up
     _LOGGER.info("Model ready")
-    zc = None
     if args.zeroconf:
         from zeroconf.asyncio import AsyncServiceInfo, AsyncZeroconf
         zc = AsyncZeroconf()
@@ -118,10 +142,8 @@ async def main() -> None:
         )
         await zc.async_register_service(info)
         _LOGGER.info("Zeroconf advertised as %s", args.zeroconf)
-    server = AsyncServer.from_uri(args.uri)
-    await server.run(
-        lambda *a, **k: CantoEventHandler(*a, model_dir=args.model_dir, **k)
-    )
+    await AsyncServer.from_uri(args.uri).run(
+        lambda *a, **k: TtsHandler(*a, model_dir=args.model_dir, **k))
 
 
 if __name__ == "__main__":

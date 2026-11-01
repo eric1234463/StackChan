@@ -1,8 +1,8 @@
 #!/bin/sh
 # Install (or reinstall) the STT/TTS launchd agents for the current user.
-#   TTS_MODEL_DIR=/path/to/canto-vits [STT_MODEL=hf-repo-or-dir] ./install.sh
+#   TTS_MODEL_DIR=/path/to/qwen3-tts-hk-cantonese-8bit [STT_MODEL=hf-repo-or-dir] ./install.sh
 set -eu
-: "${TTS_MODEL_DIR:?set TTS_MODEL_DIR to the sherpa-onnx canto-vits model directory}"
+: "${TTS_MODEL_DIR:?set TTS_MODEL_DIR to the merged Qwen3-TTS HK Cantonese MLX model directory}"
 STT_MODEL="${STT_MODEL:-WinsonLi/whisper-large-v3-cantonese-mlx-4bit}"
 SPEECH_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="$HOME/Library/Logs"
