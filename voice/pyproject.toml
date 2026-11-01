@@ -1,0 +1,16 @@
+[project]
+name = "stackchan-voice"
+version = "0.1.0"
+description = "Record a speaker dataset for a Qwen3-TTS HK Cantonese voice LoRA"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "numpy>=2,<3",
+    "sounddevice>=0.5,<1",
+    "soundfile>=0.12,<1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
