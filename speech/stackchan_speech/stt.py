@@ -1,0 +1,99 @@
+"""Wyoming ASR server wrapping mlx-whisper (Cantonese fine-tune, Apple Silicon)."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
+from wyoming.asr import Transcribe, Transcript
+from wyoming.audio import AudioChunk, AudioChunkConverter, AudioStop
+from wyoming.event import Event
+from wyoming.info import AsrModel, AsrProgram, Attribution, Describe, Info
+from wyoming.server import AsyncEventHandler, AsyncServer
+
+_LOGGER = logging.getLogger(__name__)
+RATE = 16000
+DEFAULT_MODEL = "WinsonLi/whisper-large-v3-cantonese-mlx-4bit"
+DEFAULT_PROMPT = (
+    "香港廣東話口語，英文技術詞保持英文：API、server、deploy、log、Docker、GitHub、"
+    "Wi-Fi、Home Assistant、Hermes、StackChan、42C。"
+)
+
+# MLX binds GPU streams to the thread that first uses them, so every model call
+# goes through this one worker thread; it also serialises requests.
+_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
+
+
+def _transcribe(model: str, audio: np.ndarray, language: str, prompt: str) -> str:
+    import mlx_whisper
+
+    result = mlx_whisper.transcribe(
+        audio,
+        path_or_hf_repo=model,
+        language=language,
+        initial_prompt=prompt or None,
+        condition_on_previous_text=False,
+        verbose=None,
+    )
+    return result["text"].strip()
+
+
+def make_info(model: str, language: str) -> Info:
+    attribution = Attribution(name="WinsonLi", url=f"https://huggingface.co/{model}")
+    return Info(asr=[AsrProgram(
+        name="mlx-whisper", description="mlx-whisper Cantonese large-v3", attribution=attribution,
+        installed=True, version="0.4", models=[AsrModel(
+            name=model, description=model, attribution=attribution,
+            installed=True, version="1", languages=[language])],
+    )])
+
+
+class SttHandler(AsyncEventHandler):
+    def __init__(self, *args, model: str, language: str, prompt: str, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.model, self.language, self.prompt = model, language, prompt
+        self.converter = AudioChunkConverter(rate=RATE, width=2, channels=1)
+        self.pcm = bytearray()
+
+    async def handle_event(self, event: Event) -> bool:
+        if Describe.is_type(event.type):
+            await self.write_event(make_info(self.model, self.language).event())
+        elif Transcribe.is_type(event.type):
+            self.pcm.clear()
+        elif AudioChunk.is_type(event.type):
+            self.pcm += self.converter.convert(AudioChunk.from_event(event)).audio
+        elif AudioStop.is_type(event.type):
+            audio = np.frombuffer(bytes(self.pcm), np.int16).astype(np.float32) / 32768.0
+            self.pcm.clear()
+            started = time.monotonic()
+            text = await asyncio.get_running_loop().run_in_executor(
+                _EXECUTOR, _transcribe, self.model, audio, self.language, self.prompt)
+            _LOGGER.info("transcribed %.1fs audio in %.2fs: %s",
+                         len(audio) / RATE, time.monotonic() - started, text)
+            await self.write_event(Transcript(text=text).event())
+            return False
+        return True
+
+
+async def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--uri", default="tcp://0.0.0.0:10300")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="HF repo id or local MLX model dir")
+    parser.add_argument("--language", default="yue")
+    parser.add_argument("--initial-prompt", default=DEFAULT_PROMPT)
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
+
+    _LOGGER.info("Loading %s", args.model)
+    await asyncio.get_running_loop().run_in_executor(
+        _EXECUTOR, _transcribe, args.model, np.zeros(RATE, np.float32), args.language, "")
+    _LOGGER.info("Model ready on %s", args.uri)
+    await AsyncServer.from_uri(args.uri).run(lambda *a, **k: SttHandler(
+        *a, model=args.model, language=args.language, prompt=args.initial_prompt, **k))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

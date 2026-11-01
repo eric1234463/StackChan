@@ -1,0 +1,15 @@
+[project]
+name = "stackchan-speech"
+version = "0.1.0"
+description = "Local Wyoming STT (mlx-whisper Cantonese) and TTS (sherpa-onnx Cantonese VITS) servers"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "wyoming>=1.5,<2",
+    "numpy>=2,<3",
+    "mlx-whisper>=0.4.3,<0.5",
+    "sherpa-onnx>=1.10",
+    "zeroconf>=0.130",
+]
+
+[tool.setuptools]
+packages = ["stackchan_speech"]

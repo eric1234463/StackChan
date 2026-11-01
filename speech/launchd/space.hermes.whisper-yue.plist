@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>space.hermes.whisper-yue</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__SPEECH_DIR__/.venv/bin/python</string>
+    <string>-m</string>
+    <string>stackchan_speech.stt</string>
+    <string>--uri</string>
+    <string>tcp://0.0.0.0:10300</string>
+    <string>--model</string>
+    <string>__STT_MODEL__</string>
+  </array>
+  <key>WorkingDirectory</key><string>__SPEECH_DIR__</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__LOG_DIR__/stackchan-stt.log</string>
+  <key>StandardErrorPath</key><string>__LOG_DIR__/stackchan-stt.log</string>
+</dict>
+</plist>
