@@ -53,11 +53,35 @@ def real_backends(cfg: Config, http: httpx.AsyncClient) -> Backends:
     )
 
 
+class AckAudio:
+    """The acknowledgement phrase, synthesized once and shared by all sessions."""
+
+    def __init__(self, text: str, synthesize: Callable[[str], Awaitable[tuple[np.ndarray, int]]]) -> None:
+        self.text, self.synthesize = text, synthesize
+        self.audio: tuple[np.ndarray, int] | None = None
+
+    async def get(self) -> tuple[np.ndarray, int] | None:
+        if self.audio is None and self.text:
+            try:
+                samples, rate = await self.synthesize(self.text)
+            except services.ServiceError as exc:
+                log.error("ack TTS failed, replying without it: %s", exc)  # retried next turn
+                return None
+            self.audio = loud(samples), rate
+        return self.audio
+
+
+def loud(samples: np.ndarray) -> np.ndarray:
+    # canto-vits peaks ~0.4 of full scale; bring each sentence to full scale so the M5 speaker is audible.
+    return np.frombuffer(normalize(samples.tobytes(), target_peak=1.0, max_gain=3.0), np.int16)
+
+
 class Session:
-    def __init__(self, ws: ServerConnection, cfg: Config, backends: Backends) -> None:
+    def __init__(self, ws: ServerConnection, cfg: Config, backends: Backends, ack: AckAudio) -> None:
         self.ws = ws
         self.cfg = cfg
         self.backends = backends
+        self.ack = ack
         self.session_id = uuid.uuid4().hex
         self.decoder = OpusDecoder()
         self.capturing = False
@@ -164,40 +188,64 @@ class Session:
             return
 
         await self.send_json(type="stt", text=transcript)
+        # Ask Hermes now; the acknowledgement plays while it works.
+        reply = asyncio.create_task(self.ask(transcript))
+        try:
+            await self.speak(reply, t0)
+        finally:
+            reply.cancel()
+
+    async def ask(self, transcript: str) -> str:
+        t0 = time.monotonic()
         try:
             reply = await self.backends.ask(transcript)
-            log.info("hermes %d ms: %s", ms(), reply)
+            log.info("hermes %d ms: %s", int((time.monotonic() - t0) * 1000), reply)
         except services.ServiceError as exc:
             log.error("turn failed at Hermes: %s", exc)
             reply = self.cfg.fallback_text
+        return clean(reply)
 
-        await self.speak(clean(reply), t0)
-
-    async def speak(self, text: str, t0: float) -> None:
+    async def speak(self, reply: Awaitable[str], t0: float) -> None:
+        """One TTS session around ack + reply, so the device stays in Speaking (mic off) while Hermes works."""
         await self.send_json(type="llm", emotion="neutral")
         await self.send_json(type="tts", state="start")
         try:
-            clock = time.monotonic()
-            sent = 0
-            for sentence in split_sentences(text):
-                samples, rate = await self.backends.synthesize(sentence)
-                # canto-vits peaks ~0.4 of full scale; bring each sentence to full scale so the M5 speaker is audible.
-                samples = np.frombuffer(normalize(samples.tobytes(), target_peak=1.0, max_gain=3.0), np.int16)
-                if sent == 0:
-                    log.info("first audio %d ms after end of speech", int((time.monotonic() - t0) * 1000))
-                    clock = time.monotonic()
-                await self.send_json(type="tts", state="sentence_start", text=sentence)
-                for frame in encode_opus_frames(samples, rate):
-                    await self.ws.send(frame)
-                    sent += 1
-                    delay = clock + (sent - SEND_LEAD_FRAMES) * FRAME_MS / 1000 - time.monotonic()
-                    if delay > 0:
-                        await asyncio.sleep(delay)
+            ack = await self.ack.get()
+            if ack:
+                log.info("ack audio %d ms after end of speech", int((time.monotonic() - t0) * 1000))
+                await self.stream(_once(ack))
+            await self.send_json(type="llm", emotion="working")
+            await self.stream(self.reply_sentences(await reply, t0))
         except services.ServiceError as exc:
             log.error("turn failed at TTS: %s", exc)
             await self.send_json(type="alert", status="error", message="TTS error", emotion="sad")
         finally:
             await self.send_json(type="tts", state="stop")
+
+    async def reply_sentences(self, text: str, t0: float):
+        for i, sentence in enumerate(split_sentences(text)):
+            samples, rate = await self.backends.synthesize(sentence)
+            if i == 0:
+                log.info("first reply audio %d ms after end of speech", int((time.monotonic() - t0) * 1000))
+            await self.send_json(type="tts", state="sentence_start", text=sentence)
+            yield loud(samples), rate
+
+    async def stream(self, sentences) -> None:
+        """Send Opus frames paced to real time (plus a small lead), continuously across sentences."""
+        clock, sent = time.monotonic(), 0
+        async for samples, rate in sentences:
+            if sent == 0:
+                clock = time.monotonic()
+            for frame in encode_opus_frames(samples, rate):
+                await self.ws.send(frame)
+                sent += 1
+                delay = clock + (sent - SEND_LEAD_FRAMES) * FRAME_MS / 1000 - time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
+
+async def _once(item):
+    yield item
 
 
 def save_wav(directory: str, pcm: bytes) -> None:
@@ -229,10 +277,11 @@ def make_auth_check(cfg: Config):
 async def serve_forever(cfg: Config, backends: Backends | None = None, ready: asyncio.Event | None = None) -> None:
     async with httpx.AsyncClient() as http:
         backends = backends or real_backends(cfg, http)
+        ack = AckAudio(cfg.ack_text, backends.synthesize)
 
         async def handler(ws: ServerConnection) -> None:
             log.info("device connected from %s", ws.remote_address[0])
-            await Session(ws, cfg, backends).run()
+            await Session(ws, cfg, backends, ack).run()
             log.info("device disconnected")
 
         async with serve(handler, cfg.host, cfg.port, process_request=make_auth_check(cfg),

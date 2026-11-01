@@ -37,6 +37,7 @@ class Config:
     max_utterance_ms: int = 15000
     listen_timeout_ms: int = 8000
     fallback_text: str = "我而家連唔到 Hermes。"
+    ack_text: str = "收到，幫緊你。"  # spoken while Hermes works; empty disables
     debug_audio_dir: str = ""  # if set, each utterance is saved as WAV there (local debugging only)
 
 
@@ -82,4 +83,5 @@ def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Con
         max_utterance_ms=int(env.get("MAX_UTTERANCE_MS", defaults.max_utterance_ms)),
         listen_timeout_ms=int(env.get("LISTEN_TIMEOUT_MS", defaults.listen_timeout_ms)),
         debug_audio_dir=env.get("BRIDGE_DEBUG_AUDIO_DIR", ""),
+        ack_text=env.get("ACK_TEXT", defaults.ack_text),
     )

@@ -11,7 +11,8 @@ namespace hermes_screen {
 void Init();                                  // create the image object (idempotent)
 void OnDeviceState(DeviceState state);        // xiaozhi state machine changes
 void OnUserTranscript();                      // bridge sent `stt` -> thinking
-void OnEmotion(const char* emotion);          // alerts carry their emotion: error / bridge unreachable
+void OnAssistantSentence();                   // bridge sent `sentence_start` -> replying
+void OnEmotion(const char* emotion);          // `working` (ack played) or alert emotions: error / bridge unreachable
 void Tick(bool wifi_connected);               // ~1 Hz: Wi-Fi status and timed overlays
 
 }  // namespace hermes_screen

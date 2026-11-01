@@ -408,6 +408,9 @@ void StackChanAvatarDisplay::SetChatMessage(const char* role, const char* conten
     if (role != nullptr && strcmp(role, "user") == 0) {
         hermes_screen::Init();
         hermes_screen::OnUserTranscript();
+    } else if (role != nullptr && strcmp(role, "assistant") == 0) {
+        hermes_screen::Init();
+        hermes_screen::OnAssistantSentence();
     }
 #endif
 

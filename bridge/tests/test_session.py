@@ -12,6 +12,7 @@ from stackchan_bridge.config import Config
 from stackchan_bridge.server import Backends, serve_forever
 
 TOKEN = "test-device-token"
+ACK = Config(device_token="", hermes_api_key="").ack_text
 FRAME = IN_RATE * FRAME_MS // 1000
 
 
@@ -23,8 +24,9 @@ def opus_frames(amplitude: float, count: int) -> list[bytes]:
 
 
 class Fakes:
-    def __init__(self, transcript="開客廳燈", reply="好，開咗。", hermes_error=False):
+    def __init__(self, transcript="開客廳燈", reply="好，開咗。", hermes_error=False, hermes_gate=None):
         self.transcript, self.reply, self.hermes_error = transcript, reply, hermes_error
+        self.hermes_gate = hermes_gate  # if set, Hermes answers only after the test opens it
         self.asked, self.spoken, self.stt_bytes = [], [], 0
 
     async def transcribe(self, pcm: bytes) -> str:
@@ -33,6 +35,8 @@ class Fakes:
 
     async def ask(self, text: str) -> str:
         self.asked.append(text)
+        if self.hermes_gate:
+            await self.hermes_gate.wait()
         if self.hermes_error:
             raise services.ServiceError("Hermes HTTP 500")
         return self.reply
@@ -101,9 +105,11 @@ async def test_full_turn(bridge):
         texts, audio = await collect_turn(ws)
 
     kinds = [(m["type"], m.get("state")) for m in texts]
-    assert kinds == [("stt", None), ("llm", None), ("tts", "start"), ("tts", "sentence_start"), ("tts", "stop")]
+    assert kinds == [("stt", None), ("llm", None), ("tts", "start"), ("llm", None), ("tts", "sentence_start"),
+                     ("tts", "stop")]
+    assert texts[3]["emotion"] == "working" and texts[4]["text"] == "好，開咗。"
     assert texts[0]["text"] == "開客廳燈" and all(m["session_id"] == session_id for m in texts)
-    assert fakes.asked == ["開客廳燈"] and fakes.spoken == ["好，開咗。"]
+    assert fakes.asked == ["開客廳燈"] and fakes.spoken == [ACK, "好，開咗。"]
     assert fakes.stt_bytes >= 10 * FRAME * 2  # speech frames reached STT (plus preroll)
     dec = OpusDecoder(OUT_RATE)
     assert sum(len(dec.decode(p)) for p in audio) >= OUT_RATE // 5 * 2  # >= 200 ms decodes at 24 kHz
@@ -116,8 +122,39 @@ async def test_hermes_failure_speaks_fallback_and_stops(bridge):
         await handshake(ws)
         await talk(ws)
         texts, _ = await collect_turn(ws)
-    assert fakes.spoken == ["我而家連唔到 Hermes。"]
+    assert fakes.spoken == [ACK, "我而家連唔到 Hermes。"]
     assert texts[-1] == {"session_id": texts[-1]["session_id"], "type": "tts", "state": "stop"}
+
+
+async def test_ack_plays_while_hermes_is_still_working(bridge):
+    gate = asyncio.Event()
+    fakes = Fakes(hermes_gate=gate)
+    url = await bridge(fakes)
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        await talk(ws)
+        ack_frames = 0
+        while True:  # Hermes is blocked: ack audio and the working state must still arrive
+            msg = await asyncio.wait_for(ws.recv(), 5)
+            if isinstance(msg, bytes):
+                ack_frames += 1
+            elif json.loads(msg).get("emotion") == "working":
+                break
+        assert fakes.asked == ["開客廳燈"] and ack_frames > 0
+        gate.set()
+        texts, _ = await collect_turn(ws)
+    assert [m["text"] for m in texts if m.get("state") == "sentence_start"] == ["好，開咗。"]
+
+
+async def test_ack_is_synthesized_once(bridge):
+    fakes = Fakes()
+    url = await bridge(fakes)
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        for _ in range(2):
+            await talk(ws)
+            await collect_turn(ws)
+    assert fakes.spoken == [ACK, "好，開咗。", "好，開咗。"]
 
 
 async def test_filler_transcript_skips_hermes(bridge):
