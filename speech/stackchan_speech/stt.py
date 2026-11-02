@@ -19,8 +19,8 @@ from wyoming.server import AsyncEventHandler, AsyncServer
 _LOGGER = logging.getLogger(__name__)
 RATE = 16000
 DEFAULT_MODEL = "WinsonLi/whisper-large-v3-cantonese-mlx-4bit"
-DEFAULT_PROMPT = (  # areas and devices as named in Home Assistant (listed via Hermes 2026-11-02); 睡房 = 主人房
-    "香港廣東話口語。幫我開燈、熄燈、閂窗簾：客廳、書房、主人房、睡房、廚房、廁所、走廊；"
+DEFAULT_PROMPT = (  # areas and devices as named in Home Assistant (listed via Hermes 2026-11-02)
+    "香港廣東話口語。幫我開燈、熄燈、閂窗簾：客廳、書房、主人房、廚房、廁所、走廊；"
     "燈槽、顯示器掛燈、風扇、循環扇、空氣清新機、加濕器、驅蚊器、冷氣、電視、門鎖、掃地機有冇着？"
     "英文詞保持英文：Home Assistant、Hermes、StackChan、server、log、Docker、42C。"
 )
