@@ -21,6 +21,7 @@ import soundfile as sf
 SENTENCES = Path(__file__).with_name("sentences.txt")
 MIN_S, MAX_S = 2.0, 20.0  # recipe pads short speaker clips to its 4 s floor; > 20 s risks run-on reading
 CLIP_DB, QUIET_DB, NOISY_DB = -1.0, -30.0, -50.0
+MAX_CLIPPED = 0.0005  # share of samples at full scale; first real batch had 0.1-8 % with input volume maxed
 MIN_BANDWIDTH_HZ = 10000  # TTS output is 24 kHz; Bluetooth headset mics (HFP) cut at ~7.5 kHz
 MAX_DIGITAL_SILENCE = 0.02  # share of exact-zero samples; headset noise gates zero out the gaps
 
@@ -49,13 +50,15 @@ def check(audio: np.ndarray, rate: int) -> tuple[dict, list[str]]:
     frame = int(rate * 0.05)
     frames = np.sqrt([np.mean(audio[i:i + frame] ** 2) for i in range(0, max(len(audio) - frame, 1), frame)])
     stats = {"duration": round(len(audio) / rate, 2), "peak_db": round(db(float(np.abs(audio).max(initial=0))), 1),
+             "clipped": round(float(np.mean(np.abs(audio) >= 0.999)), 4),  # saved as PCM16: >= full scale is lost
              "floor_db": round(db(float(np.percentile(frames, 10))), 1),
              "bandwidth_hz": round(bandwidth_hz(audio, rate)), "digital_silence": round(float(np.mean(audio == 0)), 3)}
     problems = []
     if not MIN_S <= stats["duration"] <= MAX_S:
         problems.append(f"length {stats['duration']} s (want {MIN_S}-{MAX_S} s)")
-    if stats["peak_db"] > CLIP_DB:
-        problems.append(f"clipping (peak {stats['peak_db']} dBFS): move back or lower the input gain")
+    if stats["clipped"] > MAX_CLIPPED or stats["peak_db"] > CLIP_DB:
+        problems.append(f"clipping ({stats['clipped']:.2%} of samples, peak {stats['peak_db']} dBFS): lower the input "
+                        "volume in System Settings > Sound > Input (aim for peaks around -6 dBFS) and redo")
     elif stats["peak_db"] < QUIET_DB:
         problems.append(f"too quiet (peak {stats['peak_db']} dBFS): move closer or raise the input gain")
     if stats["bandwidth_hz"] < min(MIN_BANDWIDTH_HZ, rate / 2 - 500):
@@ -92,6 +95,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path.home() / "voice-data" / "eric")
     parser.add_argument("--device", help="input device name substring or index (default: system input)")
     parser.add_argument("--list-devices", action="store_true")
+    parser.add_argument("--redo", help="take ids to record again, e.g. 1-6,8,15")
     args = parser.parse_args()
     if args.list_devices:
         print("\n".join(f"{i}: {d['name']} ({d['max_input_channels']} in)" for i, d in enumerate(sd.query_devices())
@@ -104,7 +108,14 @@ def main() -> None:
     sentences = [s.strip() for s in SENTENCES.read_text(encoding="utf-8").splitlines() if s.strip()]
     (args.out / "wavs").mkdir(parents=True, exist_ok=True)
     meta_path = args.out / "metadata.jsonl"
-    done = {json.loads(line)["id"] for line in meta_path.open(encoding="utf-8")} if meta_path.exists() else set()
+    rows = [json.loads(line) for line in meta_path.open(encoding="utf-8")] if meta_path.exists() else []
+    if args.redo:
+        redo = {i for part in args.redo.split(",") for i in
+                (range(int(part.split("-")[0]), int(part.split("-")[1]) + 1) if "-" in part else [int(part)])}
+        rows = [r for r in rows if r["id"] not in redo]
+        meta_path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+        print(f"Will record again: {sorted(redo)}")
+    done = {r["id"] for r in rows}
     print(f"Mic: {info['name']} @ {rate} Hz. {len(done)}/{len(sentences)} done. Out: {args.out}")
     print("Same room, same distance (~20 cm), normal speaking voice. TV off.\n")
 
