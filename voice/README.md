@@ -6,6 +6,8 @@ this Mac with torch MPS — feasibility checked 2026-11-02: ~0.9 s per optimizer
 ```sh
 uv run record.py --list-devices
 uv run record.py --device "<external mic name>"   # resumable; q to stop, rerun to continue
+# Start with the first 120 (60 assistant lines + 60 everyday lines, alternating), train, listen;
+# record further only if the voice is not close enough.
 ```
 
 - Output: `~/voice-data/eric/wavs/NNNN.wav` + `metadata.jsonl` (text, levels, problems). Not in the repo.
