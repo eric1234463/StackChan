@@ -295,12 +295,22 @@ class Session:
                 await self.send_json(type="tts", state="stop")
 
     async def reply_sentences(self, text: str, t0: float):
-        for i, sentence in enumerate(split_sentences(text)):
-            samples, rate = await self.backends.synthesize(sentence)
-            if i == 0:
-                log.info("first reply audio %d ms after end of speech", int((time.monotonic() - t0) * 1000))
-            await self.send_json(type="tts", state="sentence_start", text=sentence)
-            yield loud(samples), rate
+        """Yield each sentence's audio, synthesising the next one while the current one plays: real-time
+        pacing leaves only SEND_LEAD_FRAMES of buffer, so synthesising afterwards left ~0.6 s gaps."""
+        sentences = split_sentences(text)
+        upcoming = asyncio.create_task(self.backends.synthesize(sentences[0])) if sentences else None
+        try:
+            for i, sentence in enumerate(sentences):
+                samples, rate = await upcoming
+                upcoming = (asyncio.create_task(self.backends.synthesize(sentences[i + 1]))
+                            if i + 1 < len(sentences) else None)
+                if i == 0:
+                    log.info("first reply audio %d ms after end of speech", int((time.monotonic() - t0) * 1000))
+                await self.send_json(type="tts", state="sentence_start", text=sentence)
+                yield loud(samples), rate
+        finally:
+            if upcoming:
+                upcoming.cancel()  # turn aborted or failed mid-reply
 
     async def stream(self, sentences) -> None:
         """Send Opus frames paced to real time (plus a small lead), continuously across sentences."""

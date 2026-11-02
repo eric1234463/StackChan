@@ -283,6 +283,35 @@ async def test_speech_resuming_after_a_pause_discards_the_speculative_stt(bridge
     assert len(fakes.asked) == 1 and int(fakes.asked[0].removeprefix("開燈")) >= 30 * FRAME * 2
 
 
+async def test_next_sentence_is_synthesized_while_the_current_one_plays(bridge):
+    class SlowTts(Fakes):
+        async def synthesize(self, text: str):
+            self.spoken.append(text)
+            await asyncio.sleep(0.9)  # synthesis time, like Qwen3 on a ~5 s sentence
+            return np.zeros(22050, np.int16), 22050  # 1 s of audio
+
+    fakes = SlowTts(reply="第一句講完喇。第二句都講完喇。")
+    url = await bridge(fakes)
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        await talk(ws)
+        while True:  # ack (0.9 s synth + 1 s audio) is done at "working"; time the two reply sentences from there
+            msg = await asyncio.wait_for(ws.recv(), 5)
+            if isinstance(msg, str) and json.loads(msg).get("emotion") == "working":
+                break
+        arrivals = []  # wall time of each reply audio frame
+        while True:
+            msg = await asyncio.wait_for(ws.recv(), 5)
+            if isinstance(msg, bytes):
+                arrivals.append(asyncio.get_running_loop().time())
+            elif json.loads(msg).get("state") == "stop":
+                break
+    # continuous playback needs frame i by first + i * 60 ms (plus the device's ~300 ms lead buffer);
+    # synthesising sentence 2 only after sentence 1 has been sent makes its frames ~0.6 s late (audible gap)
+    lateness = max(t - (arrivals[0] + i * FRAME_MS / 1000) for i, t in enumerate(arrivals))
+    assert lateness < 0.25, lateness
+
+
 async def test_keepalive_reaches_idle_device(bridge, monkeypatch):
     monkeypatch.setattr(server, "KEEPALIVE_S", 0.2)
     url = await bridge(Fakes())
