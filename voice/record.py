@@ -19,7 +19,7 @@ import sounddevice as sd
 import soundfile as sf
 
 SENTENCES = Path(__file__).with_name("sentences.txt")
-MIN_S, MAX_S = 3.5, 20.0  # recipe keeps 3-30 s clips with >= 4 s decoded; leave room for edge trimming
+MIN_S, MAX_S = 2.0, 20.0  # recipe pads short speaker clips to its 4 s floor; > 20 s risks run-on reading
 CLIP_DB, QUIET_DB, NOISY_DB = -1.0, -30.0, -50.0
 MIN_BANDWIDTH_HZ = 10000  # TTS output is 24 kHz; Bluetooth headset mics (HFP) cut at ~7.5 kHz
 MAX_DIGITAL_SILENCE = 0.02  # share of exact-zero samples; headset noise gates zero out the gaps

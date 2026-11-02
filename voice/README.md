@@ -11,7 +11,7 @@ uv run record.py --device "<external mic name>"   # resumable; q to stop, rerun 
 ```
 
 - Output: `~/voice-data/eric/wavs/NNNN.wav` + `metadata.jsonl` (text, levels, problems). Not in the repo.
-- Each take is checked for length (3.5–20 s), clipping, low level and background noise; redo flagged takes.
+- Each take is checked for length (2–20 s), clipping, low level and background noise; redo flagged takes.
   The recipe's Sidon clean-up stage is CUDA-only, so recordings must be clean as recorded.
 - `sentences.txt`: 60 assistant-style lines written for this project, plus 280 colloquial sentences from
   Common Voice `zh-HK` sentence-collector (CC0), filtered to 12–32 characters without 左/地 spellings.
