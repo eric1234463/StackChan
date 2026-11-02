@@ -57,3 +57,22 @@ def is_meaningful(transcript: str) -> bool:
     core = re.sub(r"[\s\W_]+", "", transcript)
     lowered = transcript.lower()
     return len(core) >= 2 and bool(_CJK.search(transcript)) and not any(h in lowered for h in _HALLUCINATIONS)
+
+
+# Replies that only acknowledge ("OK", "收到", "好，冇問題"): in a follow-up window they end the conversation.
+_CLOSING = sorted({"ok", "okay", "收到", "好", "好嘅", "冇問題", "多謝", "唔該", "明白", "明白晒", "知道", "得",
+                   "冇嘢", "冇事", "唔使", "係咁先", "拜拜", "bye", "thankyou", "thanks"}, key=len, reverse=True)
+_PARTICLES = "喇啦呀啊囉嘅吖喎咯了"
+
+
+def is_closing(transcript: str) -> bool:
+    rest = re.sub(r"[\s\W_]+", "", transcript).lower()
+    if not rest:
+        return False
+    while rest:
+        rest = rest.lstrip(_PARTICLES)
+        phrase = next((p for p in _CLOSING if rest.startswith(p)), None)
+        if phrase is None:
+            return rest == ""
+        rest = rest[len(phrase):]
+    return True

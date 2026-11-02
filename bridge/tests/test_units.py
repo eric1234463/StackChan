@@ -89,3 +89,11 @@ def test_loud_hits_target_level_and_never_clips():
         x = (x / np.abs(x).max() * 10 ** (peak_db / 20) * 32767).astype(np.int16)
         y = loud(x).astype(np.float32) / 32768
         assert np.abs(y).max() < 1.0 and abs(20 * np.log10(np.sqrt(np.mean(y ** 2))) - LOUD_RMS_DB) < 2
+
+
+def test_closing_phrases():
+    from stackchan_bridge.text import is_closing
+    for said in ("OK", "ok。", "收到", "收到，多謝", "好", "好啦", "好嘅，唔該", "明白", "冇嘢喇", "得喇", "OK 收到", "冇問題", "好，冇問題。", "OK收到"):
+        assert is_closing(said), said
+    for said in ("好，咁聽日呢？", "收到未？", "幫我開燈", "OK Google 開燈", "好凍呀"):
+        assert not is_closing(said), said

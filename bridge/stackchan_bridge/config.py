@@ -36,7 +36,7 @@ class Config:
     vad_end_silence_ms: int = 900  # 700 ms cut sentences at pauses; 1200 ms felt slow to close
     max_utterance_ms: int = 15000
     listen_timeout_ms: int = 8000  # after the wake word: time to start talking
-    followup_timeout_ms: int = 4000  # after a reply or announcement: window for a follow-up question
+    followup_timeout_ms: int = 2000  # after a reply or announcement: time to START a follow-up question
     fallback_text: str = "我而家連唔到 Hermes。"
     ack_text: str = "收到，幫緊你。"  # spoken while Hermes works; empty disables
     device_volume: int | None = None  # 0-100, set on the device at every connect; None leaves its own setting

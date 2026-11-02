@@ -226,6 +226,30 @@ async def test_device_volume_is_set_on_connect(unused_tcp_port):
     assert msg["payload"]["params"] == {"name": "self.audio_speaker.set_volume", "arguments": {"volume": 90}}
 
 
+async def test_follow_up_ok_ends_conversation_without_hermes(bridge):
+    fakes = Fakes()
+    url = await bridge(fakes)
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        await talk(ws)
+        await collect_turn(ws)
+        fakes.transcript = "OK，收到。"
+        await talk(ws)  # device re-listens after the reply; the user just acknowledges
+        msg = json.loads(await asyncio.wait_for(ws.recv(), 5))
+        assert msg.get("command") == "idle"
+    assert fakes.asked == ["開客廳燈"]
+
+
+async def test_acknowledgement_after_wake_word_still_goes_to_hermes(bridge):
+    fakes = Fakes(transcript="收到")  # not a follow-up: a fresh wake-word turn is always a real request
+    url = await bridge(fakes)
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        await talk(ws)
+        await collect_turn(ws)
+    assert fakes.asked == ["收到"]
+
+
 async def test_keepalive_reaches_idle_device(bridge, monkeypatch):
     monkeypatch.setattr(server, "KEEPALIVE_S", 0.2)
     url = await bridge(Fakes())

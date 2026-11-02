@@ -24,7 +24,7 @@ from websockets.http11 import Request
 from . import services
 from .audio import FRAME_MS, IN_RATE, OUT_RATE, OpusDecoder, Vad, encode_opus_frames, normalize, speech_rms
 from .config import Config
-from .text import clean, is_meaningful, split_sentences
+from .text import clean, is_closing, is_meaningful, split_sentences
 
 log = logging.getLogger("stackchan_bridge")
 
@@ -107,6 +107,7 @@ class Session:
         self.decoder = OpusDecoder()
         self.capturing = False
         self.replied = False  # the next listen is the device re-listening after a reply (follow-up)
+        self.followup = False  # the current listen is such a follow-up
         self.timeout_ms = cfg.listen_timeout_ms
         self.turn: asyncio.Task | None = None
         self._reset_capture()
@@ -163,7 +164,8 @@ class Session:
             state = msg.get("state")
             if state == "start":
                 self.capturing = True
-                self.timeout_ms = self.cfg.followup_timeout_ms if self.replied else self.cfg.listen_timeout_ms
+                self.followup = self.replied
+                self.timeout_ms = self.cfg.followup_timeout_ms if self.followup else self.cfg.listen_timeout_ms
                 self.replied = False
                 self._reset_capture()
             elif state == "stop" and self.capturing:
@@ -232,6 +234,11 @@ class Session:
         if not is_meaningful(transcript):
             self.capturing = True  # device is still listening; keep capturing
             self._reset_capture()
+            return
+
+        if self.followup and is_closing(transcript):
+            log.info("follow-up was only an acknowledgement, device to idle")
+            await self.send_json(type="system", command="idle")
             return
 
         await self.send_json(type="stt", text=transcript)
