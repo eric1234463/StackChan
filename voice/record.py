@@ -21,18 +21,36 @@ import soundfile as sf
 SENTENCES = Path(__file__).with_name("sentences.txt")
 MIN_S, MAX_S = 3.5, 20.0  # recipe keeps 3-30 s clips with >= 4 s decoded; leave room for edge trimming
 CLIP_DB, QUIET_DB, NOISY_DB = -1.0, -30.0, -50.0
+MIN_BANDWIDTH_HZ = 10000  # TTS output is 24 kHz; Bluetooth headset mics (HFP) cut at ~7.5 kHz
+MAX_DIGITAL_SILENCE = 0.02  # share of exact-zero samples; headset noise gates zero out the gaps
 
 
 def db(x: float) -> float:
     return 20 * np.log10(max(x, 1e-9))
 
 
+def bandwidth_hz(audio: np.ndarray, rate: int) -> float:
+    """Highest 100 Hz band within 60 dB of the mean speech-band (300-3400 Hz) level.
+    A hard low-pass (Bluetooth HFP: ~7.4 kHz) shows as a cliff of ~50 dB to digital silence."""
+    power = np.abs(np.fft.rfft(audio)) ** 2
+    freqs = np.fft.rfftfreq(len(audio), 1 / rate)
+    edges = np.arange(0, rate / 2, 100)
+    bands = np.array([power[(freqs >= lo) & (freqs < lo + 100)].mean() for lo in edges])
+    reference = bands[(edges >= 300) & (edges < 3400)].mean()
+    alive = np.where(bands > reference * 1e-6)[0]
+    return float(edges[alive[-1]] + 100) if alive.size else 0.0
+
+
 def check(audio: np.ndarray, rate: int) -> tuple[dict, list[str]]:
     """Level stats and the problems that make a take worth redoing."""
+    if audio.size == 0:
+        return {"duration": 0.0, "peak_db": -180.0, "floor_db": -180.0, "bandwidth_hz": 0.0,
+                "digital_silence": 1.0}, ["empty take"]
     frame = int(rate * 0.05)
     frames = np.sqrt([np.mean(audio[i:i + frame] ** 2) for i in range(0, max(len(audio) - frame, 1), frame)])
     stats = {"duration": round(len(audio) / rate, 2), "peak_db": round(db(float(np.abs(audio).max(initial=0))), 1),
-             "floor_db": round(db(float(np.percentile(frames, 10))), 1)}
+             "floor_db": round(db(float(np.percentile(frames, 10))), 1),
+             "bandwidth_hz": round(bandwidth_hz(audio, rate)), "digital_silence": round(float(np.mean(audio == 0)), 3)}
     problems = []
     if not MIN_S <= stats["duration"] <= MAX_S:
         problems.append(f"length {stats['duration']} s (want {MIN_S}-{MAX_S} s)")
@@ -40,6 +58,10 @@ def check(audio: np.ndarray, rate: int) -> tuple[dict, list[str]]:
         problems.append(f"clipping (peak {stats['peak_db']} dBFS): move back or lower the input gain")
     elif stats["peak_db"] < QUIET_DB:
         problems.append(f"too quiet (peak {stats['peak_db']} dBFS): move closer or raise the input gain")
+    if stats["bandwidth_hz"] < min(MIN_BANDWIDTH_HZ, rate / 2 - 500):
+        problems.append(f"audio stops at {stats['bandwidth_hz']} Hz: Bluetooth/phone-quality mic, use a wired one")
+    if stats["digital_silence"] > MAX_DIGITAL_SILENCE:
+        problems.append(f"{stats['digital_silence']:.0%} digital silence: the mic applies a noise gate")
     if stats["floor_db"] > NOISY_DB:
         problems.append(f"background noise {stats['floor_db']} dBFS (want < {NOISY_DB}): TV, fan, aircon?")
     return stats, problems
