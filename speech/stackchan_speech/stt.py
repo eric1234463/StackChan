@@ -19,8 +19,9 @@ from wyoming.server import AsyncEventHandler, AsyncServer
 _LOGGER = logging.getLogger(__name__)
 RATE = 16000
 DEFAULT_MODEL = "WinsonLi/whisper-large-v3-cantonese-mlx-4bit"
-DEFAULT_PROMPT = (
-    "香港廣東話口語。幫我開燈、熄燈，客廳燈、廁所燈、睡房燈、燈槽、冷氣、風扇有冇着？"
+DEFAULT_PROMPT = (  # areas and devices as named in Home Assistant (listed via Hermes 2026-11-02); 睡房 = 主人房
+    "香港廣東話口語。幫我開燈、熄燈、閂窗簾：客廳、書房、主人房、睡房、廚房、廁所、走廊；"
+    "燈槽、顯示器掛燈、風扇、循環扇、空氣清新機、加濕器、驅蚊器、冷氣、電視、門鎖、掃地機有冇着？"
     "英文詞保持英文：Home Assistant、Hermes、StackChan、server、log、Docker、42C。"
 )
 # Whisper's own decode-failure limits (mlx_whisper defaults). On noise every temperature
@@ -29,6 +30,8 @@ MAX_COMPRESSION_RATIO = 2.4
 MIN_AVG_LOGPROB = -1.0
 # On steady noise whisper can also read back its own initial prompt verbatim.
 MAX_PROMPT_COVERAGE = 0.8
+# Echoes seen are 20+ characters; a short command naming one device ("開空氣清新機") is mostly prompt text too.
+MIN_ECHO_CHARS = 10
 
 
 def _norm(text: str) -> str:
@@ -42,6 +45,10 @@ def prompt_coverage(text: str, prompt: str) -> float:
         return 0.0
     blocks = difflib.SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks()
     return sum(m.size for m in blocks if m.size >= 4) / len(a)
+
+
+def is_prompt_echo(text: str, prompt: str) -> bool:
+    return len(_norm(text)) >= MIN_ECHO_CHARS and prompt_coverage(text, prompt) >= MAX_PROMPT_COVERAGE
 
 # MLX binds GPU streams to the thread that first uses them, so every model call
 # goes through this one worker thread; it also serialises requests.
@@ -62,7 +69,7 @@ def _transcribe(model: str, audio: np.ndarray, language: str, prompt: str) -> st
     kept = []
     for seg in result["segments"]:
         if (seg["compression_ratio"] > MAX_COMPRESSION_RATIO or seg["avg_logprob"] < MIN_AVG_LOGPROB
-                or prompt_coverage(seg["text"], prompt) >= MAX_PROMPT_COVERAGE):
+                or is_prompt_echo(seg["text"], prompt)):
             _LOGGER.info("dropped segment cr=%.2f logprob=%.2f: %s",
                          seg["compression_ratio"], seg["avg_logprob"], seg["text"][:40])
         else:
