@@ -1,0 +1,59 @@
+diff --git a/trainer/sft_12hz_lora_mlflow.py b/trainer/sft_12hz_lora_mlflow.py
+index 02d4a81..2ca5b14 100644
+--- a/trainer/sft_12hz_lora_mlflow.py
++++ b/trainer/sft_12hz_lora_mlflow.py
+@@ -587,6 +587,10 @@ def train():
+                              "language set exact kernels cost about 60%% per step (1.41 s against 0.87): for "
+                              "exploration; a release recipe trains exact")
+ 
++    parser.add_argument("--speaker_slot", type=int, default=3000,  # MPS-PATCH
++                        help="codec_embedding row the single voice is baked at (3000 = the recipe)")
++    parser.add_argument("--save_adapter_every_epoch", action="store_true",  # MPS-PATCH
++                        help="save the LoRA adapter (not a merged model) after each epoch, for epoch selection")
+     args = parser.parse_args()
+     if args.seed is not None:
+         import random
+@@ -659,7 +663,7 @@ def train():
+             f"row {voice_plan.slots[n]} = {n} ({sid}, {voice_plan.rows_in_data[sid]} rows)"
+             for sid, n in voice_plan.voice_of.items()), flush=True)
+     else:
+-        voice_plan = vb.single_plan(args.speaker_name)
++        voice_plan = vb.single_plan(args.speaker_name, slot=args.speaker_slot)  # MPS-PATCH
+ 
+     def _driver_says() -> str:
+         """Which of the two failures this is, named at the moment it happens.
+@@ -704,7 +708,7 @@ def train():
+     #
+     # QWEN_ALLOW_CPU_TRAIN=1 is the deliberate escape -- a tiny smoke test on a laptop
+     # is a real use -- and it must be set on purpose, not arrived at by accident.
+-    if not torch.cuda.is_available() and os.environ.get("QWEN_ALLOW_CPU_TRAIN") != "1":
++    if not torch.cuda.is_available() and not torch.backends.mps.is_available() and os.environ.get("QWEN_ALLOW_CPU_TRAIN") != "1":  # MPS-PATCH
+         raise SystemExit(
+             "REFUSING TO TRAIN ON CPU. torch reports no CUDA device.\n"
+             "  %s\n" % _driver_says() +
+@@ -1420,6 +1424,14 @@ def train():
+                         # synchronise or it measures queueing rather than work.
+                         if torch.cuda.is_available():
+                             torch.cuda.synchronize()
++                        elif torch.backends.mps.is_available():  # MPS-PATCH
++                            torch.mps.synchronize()
++                            import resource as _rs
++                            accelerator.print(f"MPSSTEP step={optimizer_steps} epoch={epoch} loss={float(loss.detach()):.4f} "
++                                              f"dt={time.perf_counter()-_last_step[0]:.3f}s "
++                                              f"mps_alloc={torch.mps.current_allocated_memory()/2**30:.2f}GiB "
++                                              f"mps_driver={torch.mps.driver_allocated_memory()/2**30:.2f}GiB "
++                                              f"maxrss={_rs.getrusage(_rs.RUSAGE_SELF).ru_maxrss/2**30:.2f}GiB", flush=True)
+                         _now = time.perf_counter()
+                         _step_times.append(_now - _last_step[0])
+                         _last_step[0] = _now
+@@ -1518,6 +1530,10 @@ def train():
+             # tolerable for the single-epoch runs this script was written for and a
+             # disk bomb for anything longer: a 20-epoch run wrote 89 GB and took the
+             # volume to 98% full. --checkpoint_every_epochs 0 keeps only final_merged.
++            if args.save_adapter_every_epoch and accelerator.is_main_process and not args.full_ft:  # MPS-PATCH
++                accelerator.unwrap_model(model).save_pretrained(
++                    os.path.join(args.output_model_path, f"adapter-epoch-{epoch + 1}"))
++
+             want_ckpt = (args.checkpoint_every_epochs > 0
+                          and (epoch + 1) % args.checkpoint_every_epochs == 0)
+             if accelerator.is_main_process and acct.batches > 0 and want_ckpt:
