@@ -36,3 +36,13 @@ def test_keeps_shortest_when_all_attempts_are_long(monkeypatch):
     monkeypatch.setattr(tts, "load", lambda _: model)
     seconds = len(tts.synth_chunk("unused", "收到。")) / 2 / tts.RATE
     assert model.calls == tts.MAX_ATTEMPTS and 4.0 <= seconds < 4.3
+
+
+def test_time_stretch_shortens_without_changing_pitch():
+    t = np.arange(tts.RATE * 2) / tts.RATE
+    tone = (0.5 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+    fast = tts.time_stretch(tone, 1.25)
+    assert abs(len(fast) / len(tone) - 1 / 1.25) < 0.02
+    spectrum = np.abs(np.fft.rfft(fast * np.hanning(len(fast))))
+    assert abs(np.fft.rfftfreq(len(fast), 1 / tts.RATE)[spectrum.argmax()] - 200) < 3  # same pitch
+    assert tts.time_stretch(tone, 1.0) is tone

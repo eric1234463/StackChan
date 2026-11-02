@@ -66,7 +66,31 @@ def trim(audio: np.ndarray) -> np.ndarray:
     return audio[start:end]
 
 
-def synth_chunk(model_dir: str, text: str, voice: str = DEFAULT_VOICE) -> bytes:
+def time_stretch(audio: np.ndarray, speed: float) -> np.ndarray:
+    """WSOLA: play `speed` times faster at the same pitch. 40 ms Hann frames at 50 % overlap; each input frame is
+    taken within +-12 ms of its nominal position where it best continues the previous one (no phase smearing)."""
+    if speed == 1.0 or len(audio) < 2 * int(RATE * 0.04):
+        return audio
+    frame, tol = int(RATE * 0.04), int(RATE * 0.012)
+    hop = frame // 2
+    window = np.hanning(frame).astype(np.float32)
+    n_out = int(len(audio) / speed)
+    padded = np.concatenate([np.zeros(tol, np.float32), audio, np.zeros(frame + tol, np.float32)])
+    out = np.zeros(n_out + frame, np.float32)
+    norm = np.zeros(n_out + frame, np.float32)
+    prev = tol  # where the previous frame was taken from (in padded coordinates)
+    for k in range(0, n_out, hop):
+        nominal = tol + int(k * speed)
+        target = padded[prev + hop:prev + hop + frame]  # natural continuation of the previous frame
+        region = padded[nominal - tol:nominal + tol + frame]
+        best = int(np.argmax(np.correlate(region, target, "valid"))) if k else tol
+        prev = nominal - tol + best
+        out[k:k + frame] += padded[prev:prev + frame] * window
+        norm[k:k + frame] += window
+    return out[:n_out] / np.maximum(norm[:n_out], 1e-3)
+
+
+def synth_chunk(model_dir: str, text: str, voice: str = DEFAULT_VOICE, speed: float = 1.0) -> bytes:
     model = load(model_dir)
     # Sampling sometimes keeps talking after the text ("收到，幫緊你" + 3 s of babble); far too long = retry.
     limit_s = len(re.sub(r"\W", "", text)) * SECONDS_PER_CHAR_MAX + 1.0
@@ -79,7 +103,7 @@ def synth_chunk(model_dir: str, text: str, voice: str = DEFAULT_VOICE) -> bytes:
         if len(audio) / RATE <= limit_s:
             break
         _LOGGER.warning("attempt %d: %.1fs audio for %d chars, retrying: %s", attempt + 1, len(audio) / RATE, len(text), text)
-    return (np.clip(best, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+    return (np.clip(time_stretch(best, speed), -1.0, 1.0) * 32767).astype(np.int16).tobytes()
 
 
 def make_info(voice: str) -> Info:
@@ -94,9 +118,9 @@ def make_info(voice: str) -> Info:
 
 
 class TtsHandler(AsyncEventHandler):
-    def __init__(self, *args, model_dir: str, voice: str, **kwargs) -> None:
+    def __init__(self, *args, model_dir: str, voice: str, speed: float, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.model_dir, self.voice = model_dir, voice
+        self.model_dir, self.voice, self.speed = model_dir, voice, speed
 
     async def handle_event(self, event: Event) -> bool:
         if Describe.is_type(event.type):
@@ -109,7 +133,8 @@ class TtsHandler(AsyncEventHandler):
             await self.write_event(AudioStart(rate=RATE, width=2, channels=1).event())
             samples = 0
             for piece in chunks(text):  # stream chunk by chunk so long replies start sooner
-                pcm = await loop.run_in_executor(_EXECUTOR, synth_chunk, self.model_dir, piece, self.voice)
+                pcm = await loop.run_in_executor(_EXECUTOR, synth_chunk, self.model_dir, piece, self.voice,
+                                                 self.speed)
                 samples += len(pcm) // 2
                 await self.write_event(AudioChunk(audio=pcm, rate=RATE, width=2, channels=1).event())
             await self.write_event(AudioStop().event())
@@ -124,6 +149,9 @@ async def main() -> None:
     parser.add_argument("--model-dir", required=True,
                         help="Merged Qwen3-TTS HK Cantonese MLX model (apply_adapter.py + mlx_audio.convert)")
     parser.add_argument("--voice", default=DEFAULT_VOICE, help="speaker name baked into the model (spk_id)")
+    parser.add_argument("--speed", type=float, default=1.0,
+                        help="speaking-rate factor applied after synthesis (pitch kept); a voice trained on read-aloud "
+                             "takes speaks at reading pace, ~1.15-1.25 sounds conversational")
     parser.add_argument("--zeroconf", nargs="?", const="canto-tts",
                         help="Advertise via zeroconf for HA auto-discovery")
     args = parser.parse_args()
@@ -145,7 +173,7 @@ async def main() -> None:
         await zc.async_register_service(info)
         _LOGGER.info("Zeroconf advertised as %s", args.zeroconf)
     await AsyncServer.from_uri(args.uri).run(
-        lambda *a, **k: TtsHandler(*a, model_dir=args.model_dir, voice=args.voice, **k))
+        lambda *a, **k: TtsHandler(*a, model_dir=args.model_dir, voice=args.voice, speed=args.speed, **k))
 
 
 if __name__ == "__main__":

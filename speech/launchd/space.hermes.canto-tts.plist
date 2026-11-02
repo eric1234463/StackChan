@@ -14,6 +14,8 @@
     <string>__TTS_MODEL_DIR__</string>
     <string>--voice</string>
     <string>__TTS_VOICE__</string>
+    <string>--speed</string>
+    <string>__TTS_SPEED__</string>
     <string>--zeroconf</string>
     <string>canto-tts</string>
   </array>
