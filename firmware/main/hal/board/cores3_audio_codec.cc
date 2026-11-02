@@ -224,6 +224,16 @@ void CoreS3AudioCodec::EnableOutput(bool enable) {
             .mclk_multiple = 0,
         };
         ESP_ERROR_CHECK(esp_codec_dev_open(output_dev_, &fs));
+#if CONFIG_HERMES_SPEAKER_BOOST
+        {
+            // esp_codec_dev's open resets the AW88298 and writes BSTCTRL2 (0x61) = 0x0673, boost off;
+            // 0x6673 is the chip default with the boost converter on (more output swing).
+            uint8_t boost_on[2] = {0x66, 0x73};
+            if (out_ctrl_if_->write_reg(out_ctrl_if_, 0x61, 1, boost_on, 2) != 0) {
+                ESP_LOGW(TAG, "AW88298 boost enable failed");
+            }
+        }
+#endif
         ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, output_volume_));
     } else {
         ESP_ERROR_CHECK(esp_codec_dev_close(output_dev_));
