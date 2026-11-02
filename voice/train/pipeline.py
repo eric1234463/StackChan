@@ -6,7 +6,8 @@
 prep: the recipe's speaker-clip path without Sidon (CUDA-only) or its dynamics step: 80 Hz high-pass at the
 source rate (mains hum, 36-134 Hz in the takes) -> librosa resample to 24 kHz -> ingest trim_edges(0.15, 0.20) ->
 energy -> edges v2 -> trim (0.10 s before, 0.30 s after the speech core) -> pad back to the ingested length with
-digital silence -> a fixed -7 dB (the filter and resampler overshoot full-scale peaks; PCM16 would clip them) ->
+digital silence -> per-clip loudness: speech RMS to TARGET_RMS_DB, capped so the peak stays <= PEAK_CAP_DB (the
+model reproduces training loudness: a fixed -7 dB on quietly recorded takes gave voices ~11 dB quieter) ->
 12 Hz codec codes. Writes train.jsonl / holdout.jsonl (trainer rows) and clips.json.
 bake: the trainer wrote the new voice's mean speaker vector at --slot; hk_voice_343 stays at row 3000. Refuses unless
 every codec_embedding row except --slot equals the start point bit for bit, then names both voices in spk_id.
@@ -19,7 +20,8 @@ import random
 import sys
 from pathlib import Path
 
-GAIN_DB = -7.0
+TARGET_RMS_DB = -20.0  # speech-frame RMS; hk_voice_343 outputs sit around -24 dBFS RMS / -5 dBFS peak
+PEAK_CAP_DB = -1.0
 RATE = 24000
 KEY = "talker.model.codec_embedding.weight"
 
@@ -40,7 +42,13 @@ def prep(a) -> None:
     meta = [r for r in meta if r["id"] not in exclude]
     held = set(random.Random(a.seed).sample(sorted(r["id"] for r in meta), a.holdout)) if a.holdout else set()
 
-    gain = 10 ** (GAIN_DB / 20)
+    def loudness_gain(x):
+        frame = int(RATE * 0.05)
+        e = np.sqrt([np.mean(x[i:i + frame] ** 2) for i in range(0, max(len(x) - frame, 1), frame)])
+        speech_rms = float(np.mean(e[e > 0.1 * e.max()])) if e.max() > 0 else 1.0
+        peak = float(np.abs(x).max()) or 1.0
+        return min(10 ** (TARGET_RMS_DB / 20) / speech_rms, 10 ** (PEAK_CAP_DB / 20) / peak)
+
     clips = []
     for r in meta:
         y, sr = sf.read(Path(a.data) / r["file"], dtype="float32")
@@ -59,14 +67,14 @@ def prep(a) -> None:
             z[s0:s1] = y[s0:s1]
         else:
             z[:] = y
-        z *= gain
+        z *= loudness_gain(z)
         path = out / "wavs" / f"{r['id']:04d}.wav"
         sf.write(path, z, RATE, subtype="PCM_16")
         clips.append({"id": r["id"], "audio": str(path), "text": r["text"], "duration_sec": round(n / RATE, 2),
                       "peak_dbfs": round(float(20 * np.log10(np.abs(z).max() + 1e-12)), 1),
                       "split": "holdout" if r["id"] in held else "train"})
-    if max(c["peak_dbfs"] for c in clips) >= -0.1:
-        raise SystemExit(f"a clip still reaches full scale after {GAIN_DB} dB; lower GAIN_DB")
+    if max(c["peak_dbfs"] for c in clips) > PEAK_CAP_DB + 0.1:
+        raise SystemExit(f"a clip exceeds {PEAK_CAP_DB} dBFS after loudness normalisation")
 
     from qwen_tts import Qwen3TTSTokenizer
     tok = Qwen3TTSTokenizer.from_pretrained(a.tokenizer, device_map=a.device)
