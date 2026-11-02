@@ -210,6 +210,22 @@ async def test_follow_up_window_is_shorter_than_wake_window(bridge):
             await asyncio.wait_for(ws.recv(), 0.5)
 
 
+async def test_device_volume_is_set_on_connect(unused_tcp_port):
+    cfg = Config(device_token=TOKEN, hermes_api_key="unused", host="127.0.0.1", port=unused_tcp_port, device_volume=90)
+    ready = asyncio.Event()
+    task = asyncio.create_task(serve_forever(cfg, Fakes().backends(), ready))
+    await ready.wait()
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{unused_tcp_port}/xiaozhi/v1/",
+                                      additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+            await handshake(ws)
+            msg = json.loads(await asyncio.wait_for(ws.recv(), 2))
+    finally:
+        task.cancel()
+    assert msg["type"] == "mcp" and msg["payload"]["method"] == "tools/call"
+    assert msg["payload"]["params"] == {"name": "self.audio_speaker.set_volume", "arguments": {"volume": 90}}
+
+
 async def test_keepalive_reaches_idle_device(bridge, monkeypatch):
     monkeypatch.setattr(server, "KEEPALIVE_S", 0.2)
     url = await bridge(Fakes())

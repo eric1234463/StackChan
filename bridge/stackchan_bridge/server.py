@@ -140,6 +140,11 @@ class Session:
         if kind == "hello":
             await self.send_json(type="hello", transport="websocket", audio_params={
                 "format": "opus", "sample_rate": OUT_RATE, "channels": 1, "frame_duration": FRAME_MS})
+            if self.cfg.device_volume is not None:  # xiaozhi's built-in MCP tool; the codec persists it
+                await self.send_json(type="mcp", payload={
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "self.audio_speaker.set_volume",
+                               "arguments": {"volume": self.cfg.device_volume}}})
         elif kind == "listen":
             state = msg.get("state")
             if state == "start":

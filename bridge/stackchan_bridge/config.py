@@ -39,6 +39,7 @@ class Config:
     followup_timeout_ms: int = 4000  # after a reply or announcement: window for a follow-up question
     fallback_text: str = "我而家連唔到 Hermes。"
     ack_text: str = "收到，幫緊你。"  # spoken while Hermes works; empty disables
+    device_volume: int | None = None  # 0-100, set on the device at every connect; None leaves its own setting
     debug_audio_dir: str = ""  # if set, each utterance is saved as WAV there (local debugging only)
 
 
@@ -86,4 +87,5 @@ def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Con
         followup_timeout_ms=int(env.get("FOLLOWUP_TIMEOUT_MS", defaults.followup_timeout_ms)),
         debug_audio_dir=env.get("BRIDGE_DEBUG_AUDIO_DIR", ""),
         ack_text=env.get("ACK_TEXT", defaults.ack_text),
+        device_volume=int(env["DEVICE_VOLUME"]) if env.get("DEVICE_VOLUME") else None,
     )
