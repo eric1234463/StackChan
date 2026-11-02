@@ -80,3 +80,15 @@ def test_long_internal_pauses_are_shortened_short_ones_kept():
     audio = np.concatenate([tone(0.5), noise(0.6), tone(0.5), noise(0.1), tone(0.5)])
     out = tts.cap_pauses(audio)
     assert abs(len(out) / rate - (1.5 + tts.MAX_PAUSE_S + 0.1)) < 0.05
+
+
+def test_pause_cap_keeps_quiet_speech_inside_a_pause():
+    # Fricatives and breath tails (~-42 dB, 8 dB above the -50 dB hiss) sit between pause noise (-50 dB); cutting them
+    # made "同埋會唔會有破音或者重新開機" sound odd. Only near-noise-floor frames may be removed.
+    rng = np.random.default_rng(3)
+    rate = tts.RATE
+    noise = lambda s: (rng.standard_normal(int(rate * s)) * 10 ** (-50 / 20)).astype(np.float32)
+    tone = lambda s, db: (np.sin(2 * np.pi * 220 * np.arange(int(rate * s)) / rate) * 10 ** (db / 20) * np.sqrt(2)).astype(np.float32)
+    audio = np.concatenate([noise(0.5), tone(0.5, -13), noise(0.3), tone(0.1, -42), noise(0.3), tone(0.5, -13), noise(0.5)])
+    out = tts.cap_pauses(audio)
+    assert abs(len(out) / rate - (len(audio) / rate - 2 * (0.3 - tts.MAX_PAUSE_S))) < 0.05

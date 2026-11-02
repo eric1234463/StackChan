@@ -27,6 +27,7 @@ LEAD_KEEP_S, TAIL_KEEP_S = 0.04, 0.15  # every generation starts with 0.5-1.2 s 
 SECONDS_PER_CHAR_MAX = 0.4  # measured ~0.25-0.3 s per Cantonese character
 MAX_ATTEMPTS = 3
 MAX_PAUSE_S = 0.22  # conversational comma pause, before --speed (0.18 s at 1.2x)
+PAUSE_MARGIN_DB = 4.0  # pause = within this of the noise floor (trim uses 10 dB)
 
 
 def load(model_dir: str):
@@ -55,15 +56,15 @@ def chunks(text: str) -> list[str]:
     return [c.strip() for c in out if c.strip()]
 
 
-def _voiced(audio: np.ndarray) -> tuple[np.ndarray, int]:
+def _voiced(audio: np.ndarray, margin_db: float = 10.0) -> tuple[np.ndarray, int]:
     """Per 20 ms frame: is it above silence? A trained voice also reproduces its recording room's hiss (~37 dB
-    below peak), so "silence" is anything under 10 dB above the noise floor (the 10th-percentile non-silent frame;
+    below peak), so "silence" is anything under margin_db above the noise floor (the 10th-percentile non-silent frame;
     every generation has >=0.5 s of lead-in), and never less than 40 dB or more than 20 dB below peak."""
     frame = int(RATE * 0.02)
     energy = np.sqrt([np.mean(audio[i:i + frame] ** 2) for i in range(0, max(len(audio) - frame, 1), frame)])
     peak = float(energy.max())
     audible = energy[energy > 3e-4]  # digital-silence stretches (exact zeros) are not the noise floor
-    floor = float(np.percentile(audible, 10)) * 10 ** (10 / 20) if audible.size else 0.0
+    floor = float(np.percentile(audible, 10)) * 10 ** (margin_db / 20) if audible.size else 0.0
     return energy > max(min(floor, peak * 0.1), peak * 0.01, 1e-4), frame
 
 
@@ -80,10 +81,11 @@ def trim(audio: np.ndarray) -> np.ndarray:
 
 def cap_pauses(audio: np.ndarray) -> np.ndarray:
     """Shorten internal silences to MAX_PAUSE_S (keeping both edges of each pause): the eric voice copies the
-    400-680 ms comma pauses of read-aloud takes, which sound like stalls in conversation."""
+    400-680 ms comma pauses of read-aloud takes, which sound like stalls in conversation. Stricter than trim
+    (PAUSE_MARGIN_DB) so breath tails and fricatives (~8 dB above the hiss) are never cut; splices crossfade."""
     if not len(audio):
         return audio
-    is_voiced, frame = _voiced(audio)
+    is_voiced, frame = _voiced(audio, PAUSE_MARGIN_DB)
     keep = int(RATE * MAX_PAUSE_S) // 2
     out, pos, i = [], 0, 0
     while i < len(is_voiced):
@@ -97,7 +99,13 @@ def cap_pauses(audio: np.ndarray) -> np.ndarray:
             out += [audio[pos:i * frame + keep]]
             pos = j * frame - keep
         i = j
-    return np.concatenate(out + [audio[pos:]])
+    out.append(audio[pos:])
+    fade = int(RATE * 0.01)
+    joined = out[0]
+    ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+    for seg in out[1:]:
+        joined = np.concatenate([joined[:-fade], joined[-fade:] * (1 - ramp) + seg[:fade] * ramp, seg[fade:]])
+    return joined
 
 
 def time_stretch(audio: np.ndarray, speed: float) -> np.ndarray:
