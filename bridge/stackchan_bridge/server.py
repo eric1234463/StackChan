@@ -263,6 +263,12 @@ class Session:
             self.capturing = True  # device is still listening
             self._reset_capture()
             return
+        if self.followup and levels[len(levels) * 9 // 10] < self.cfg.followup_min_rms:
+            log.info("follow-up too quiet (p90 below %.3f): background talk, device to idle", self.cfg.followup_min_rms)
+            self.frames = []
+            self._drop_speculation()
+            await self.send_json(type="system", command="idle")
+            return
         pcm = normalize(b"".join(self.frames))
         self.frames = []
         if self.cfg.debug_audio_dir:

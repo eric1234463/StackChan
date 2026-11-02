@@ -80,9 +80,9 @@ async def handshake(ws):
     return hello["session_id"]
 
 
-async def talk(ws):
+async def talk(ws, amplitude=0.3):
     await ws.send(json.dumps({"type": "listen", "state": "start", "mode": "auto"}))
-    for frame in opus_frames(0.0, 3) + opus_frames(0.3, 10) + opus_frames(0.0, 25):  # 1.5 s > 1200 ms end silence
+    for frame in opus_frames(0.0, 3) + opus_frames(amplitude, 10) + opus_frames(0.0, 25):  # 1.5 s > 1200 ms end silence
         await ws.send(frame)
 
 
@@ -239,6 +239,33 @@ async def test_follow_up_ok_ends_conversation_without_hermes(bridge):
         await talk(ws)  # device re-listens after the reply; the user just acknowledges
         msg = json.loads(await asyncio.wait_for(ws.recv(), 5))
         assert msg.get("command") == "idle"
+    assert fakes.asked == ["開客廳燈"]
+
+
+QUIET = 0.04  # sine RMS ~0.028: voiced for the VAD (0.015) but below followup_min_rms
+
+
+async def test_quiet_follow_up_is_background_talk_and_ends_conversation(bridge):
+    fakes = Fakes()
+    url = await bridge(fakes)
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        await talk(ws)
+        await collect_turn(ws)
+        fakes.transcript = "渣打嗰邊點呀"
+        await talk(ws, amplitude=QUIET)  # someone across the room keeps talking after the reply
+        msg = json.loads(await asyncio.wait_for(ws.recv(), 5))
+        assert msg.get("command") == "idle"
+    assert fakes.asked == ["開客廳燈"]
+
+
+async def test_quiet_request_after_wake_word_still_goes_to_hermes(bridge):
+    fakes = Fakes()
+    url = await bridge(fakes)
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        await talk(ws, amplitude=QUIET)
+        await collect_turn(ws)
     assert fakes.asked == ["開客廳燈"]
 
 

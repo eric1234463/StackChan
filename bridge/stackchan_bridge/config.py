@@ -44,6 +44,9 @@ class Config:
     max_utterance_ms: int = 15000
     listen_timeout_ms: int = 8000  # after the wake word: time to start talking
     followup_timeout_ms: int = 2000  # after a reply or announcement: time to START a follow-up question
+    # A follow-up quieter than this (speech RMS p90) is someone else talking, not a reply to the device: on
+    # 2026-11-02 background-talk follow-ups were p90 0.016-0.034 and real ones 0.062-0.100.
+    followup_min_rms: float = 0.045
     fallback_text: str = "我而家連唔到 Hermes。"
     ack_text: str = "收到，幫緊你。"  # spoken while Hermes works; empty disables
     device_volume: int | None = None  # 0-100, set on the device at every connect; None leaves its own setting
@@ -97,6 +100,7 @@ def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Con
         max_utterance_ms=int(env.get("MAX_UTTERANCE_MS", defaults.max_utterance_ms)),
         listen_timeout_ms=int(env.get("LISTEN_TIMEOUT_MS", defaults.listen_timeout_ms)),
         followup_timeout_ms=int(env.get("FOLLOWUP_TIMEOUT_MS", defaults.followup_timeout_ms)),
+        followup_min_rms=float(env.get("FOLLOWUP_MIN_RMS", defaults.followup_min_rms)),
         debug_audio_dir=env.get("BRIDGE_DEBUG_AUDIO_DIR", ""),
         wake_audio_dir=env.get("BRIDGE_WAKE_AUDIO_DIR", ""),
         ack_text=env.get("ACK_TEXT", defaults.ack_text),
