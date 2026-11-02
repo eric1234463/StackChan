@@ -26,7 +26,10 @@ extern const uint8_t model_start[] asm("_binary_hermes_wei_eric_tflite_start");
 namespace {
 
 // Runtime parameters of the trained model (see wei_eric.json / training_parameters.yaml).
-constexpr float kProbabilityCutoff = 0.20f;
+// 0.20 (the manifest value) fired on the first rising frames: 2 false triggers in 10 min from distant Cantonese
+// talk (2026-11-02). Offline replay of this model: 0.9 kept 88/90 wakes (2 speakers) with 0 hits in 0.58 h of
+// Cantonese speech (0.2: 89/90, 2 hits); detection is a median 120 ms later.
+constexpr float kProbabilityCutoff = 0.90f;
 constexpr size_t kTensorArenaSize  = 80000 + 16 * 1024;  // manifest size + headroom
 constexpr size_t kVarArenaSize     = 1024;
 constexpr int kFeatureCount        = 40;
