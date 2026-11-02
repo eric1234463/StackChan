@@ -46,3 +46,26 @@ def test_time_stretch_shortens_without_changing_pitch():
     spectrum = np.abs(np.fft.rfft(fast * np.hanning(len(fast))))
     assert abs(np.fft.rfftfreq(len(fast), 1 / tts.RATE)[spectrum.argmax()] - 200) < 3  # same pitch
     assert tts.time_stretch(tone, 1.0) is tone
+
+
+def test_trim_cuts_learned_room_noise_not_just_digital_silence():
+    # The eric voice reproduces its recording room: ~0.5 s of -50 dBFS hiss around speech peaking at -13 dBFS
+    # (only ~37 dB below peak, so a fixed peak-relative threshold kept all of it).
+    rng = np.random.default_rng(0)
+    rate = tts.RATE
+    noise = lambda s: (rng.standard_normal(int(rate * s)) * 10 ** (-50 / 20)).astype(np.float32)
+    t = np.arange(int(rate * 1.0)) / rate
+    speech = (np.sin(2 * np.pi * 220 * t) * 10 ** (-13 / 20) * np.sqrt(2)).astype(np.float32)
+    out = tts.trim(np.concatenate([noise(0.5), speech, noise(0.6)]))
+    assert len(out) / rate < 1.0 + tts.LEAD_KEEP_S + tts.TAIL_KEEP_S + 0.05
+
+
+def test_trim_noise_floor_ignores_digital_silence():
+    # Some generations end hiss -> exact zeros -> hiss; the zeros must not pull the noise-floor estimate down.
+    rng = np.random.default_rng(1)
+    rate = tts.RATE
+    noise = lambda s: (rng.standard_normal(int(rate * s)) * 10 ** (-50 / 20)).astype(np.float32)
+    t = np.arange(int(rate * 1.0)) / rate
+    speech = (np.sin(2 * np.pi * 220 * t) * 10 ** (-13 / 20) * np.sqrt(2)).astype(np.float32)
+    out = tts.trim(np.concatenate([noise(0.5), speech, noise(0.4), np.zeros(int(rate * 0.4), np.float32), noise(0.2)]))
+    assert len(out) / rate < 1.0 + tts.LEAD_KEEP_S + tts.TAIL_KEEP_S + 0.05
