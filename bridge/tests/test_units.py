@@ -78,3 +78,14 @@ def test_daily_conversation_changes_at_local_midnight():
     noon = _time.mktime((2026, 11, 1, 12, 0, 0, 0, 0, -1))
     assert daily_conversation("stackchan", noon) == "stackchan-2026-11-01"
     assert daily_conversation("stackchan", noon + 12 * 3600) == "stackchan-2026-11-02"
+
+
+def test_loud_hits_target_level_and_never_clips():
+    from stackchan_bridge.server import LOUD_RMS_DB, loud
+    t = np.arange(24000 * 2) / 24000
+    envelope = 0.5 + 0.5 * np.sin(2 * np.pi * 3 * t) ** 2  # syllable-like amplitude swings
+    for peak_db in (-4, -20):  # typical TTS output, and a much quieter one
+        x = np.sin(2 * np.pi * 200 * t) * envelope
+        x = (x / np.abs(x).max() * 10 ** (peak_db / 20) * 32767).astype(np.int16)
+        y = loud(x).astype(np.float32) / 32768
+        assert np.abs(y).max() < 1.0 and abs(20 * np.log10(np.sqrt(np.mean(y ** 2))) - LOUD_RMS_DB) < 2

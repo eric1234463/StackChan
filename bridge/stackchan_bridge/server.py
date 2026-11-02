@@ -78,9 +78,23 @@ class AckAudio:
         return self.audio
 
 
+LOUD_RMS_DB = -13.0  # speech RMS sent to the device; peak-normalising alone left ~-18 dBFS (crest 16-18 dB)
+LIMIT_KNEE = 0.6  # soft limiter: linear below, tanh-rounded above, never reaching full scale
+
+
 def loud(samples: np.ndarray) -> np.ndarray:
-    # canto-vits peaks ~0.4 of full scale; bring each sentence to full scale so the M5 speaker is audible.
-    return np.frombuffer(normalize(samples.tobytes(), target_peak=1.0, max_gain=3.0), np.int16)
+    """Make a sentence as loud as the small M5 speaker allows (device volume is already at 100):
+    raise speech RMS to LOUD_RMS_DB, then round off the peaks instead of hard clipping them."""
+    x = samples.astype(np.float32) / 32768.0
+    frame = 1200  # 50 ms at 24 kHz
+    energy = np.sqrt([np.mean(x[i:i + frame] ** 2) for i in range(0, max(x.size - frame, 1), frame)])
+    if not x.size or energy.max() <= 0:
+        return samples
+    speech_rms = float(np.mean(energy[energy > 0.1 * energy.max()]))
+    y = x * min(10 ** (LOUD_RMS_DB / 20) / speech_rms, 8.0)
+    over = np.abs(y) > LIMIT_KNEE
+    y[over] = np.sign(y[over]) * (LIMIT_KNEE + (1 - LIMIT_KNEE) * np.tanh((np.abs(y[over]) - LIMIT_KNEE) / (1 - LIMIT_KNEE)))
+    return (y * 32767).astype(np.int16)
 
 
 class Session:
@@ -160,6 +174,8 @@ class Session:
             if self.turn and not self.turn.done():
                 self.turn.cancel()
             await self.send_json(type="tts", state="stop")
+        elif kind == "mcp":
+            log.info("device mcp: %s", json.dumps(msg.get("payload"), ensure_ascii=False)[:300])
         else:
             log.debug("ignored message type %r", kind)
 
