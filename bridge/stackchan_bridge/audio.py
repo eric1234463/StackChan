@@ -81,6 +81,11 @@ class Vad:
         self._voiced_ms = 0
         self._silence_ms = 0
 
+    @property
+    def silence_ms(self) -> int:
+        """Silence so far inside an utterance (0 while voiced or before speech started)."""
+        return self._silence_ms if self.in_speech else 0
+
     def feed(self, pcm: bytes, frame_ms: int = FRAME_MS) -> str | None:
         voiced = speech_rms(pcm) >= self.threshold
         if not self.in_speech:

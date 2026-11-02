@@ -33,7 +33,7 @@ class Config:
     vad_rms_threshold: float = 0.015  # device noise floor ~0.007 (measured 2026-11-01)
     vad_start_speech_ms: int = 180
     min_voiced_ms: int = 300  # utterances with less voiced audio are noise (whisper hallucinates on them)
-    vad_end_silence_ms: int = 900  # 700 ms cut sentences at pauses; 1200 ms felt slow to close
+    vad_end_silence_ms: int = 800  # longest mid-sentence pause in 55 real takes: 780 ms (700 cut 4 of them)
     max_utterance_ms: int = 15000
     listen_timeout_ms: int = 8000  # after the wake word: time to start talking
     followup_timeout_ms: int = 2000  # after a reply or announcement: time to START a follow-up question

@@ -30,6 +30,9 @@ log = logging.getLogger("stackchan_bridge")
 
 WS_PATH = "/xiaozhi/v1"
 PREROLL_MS = 300  # kept before voice onset so the first syllable is not cut
+# STT starts on the audio so far after this much silence, before end-of-speech is certain; it is dropped if the
+# speaker resumes, and reused at the end (STT takes ~0.2 s, so the acknowledgement starts that much sooner).
+SPECULATE_MS = 420
 SEND_LEAD_FRAMES = 5  # frames sent ahead of real time to absorb Wi-Fi jitter
 ANNOUNCE_PATH = "/announce"
 # The device counts only JSON as traffic and drops a channel silent for 120 s (pings do not count).
@@ -113,10 +116,16 @@ class Session:
         self._reset_capture()
 
     def _reset_capture(self) -> None:
+        self._drop_speculation()
         self.vad = Vad(self.cfg.vad_rms_threshold, self.cfg.vad_start_speech_ms, self.cfg.vad_end_silence_ms)
         self.frames: list[bytes] = []
         self.captured_ms = 0  # audio received since listen start (not wall clock: frames can arrive in bursts)
         self.levels: list[float] = []  # per-frame RMS since listen start, for diagnostics
+
+    def _drop_speculation(self) -> None:
+        if getattr(self, "speculative", None):
+            self.speculative.cancel()
+        self.speculative: asyncio.Task | None = None
 
     async def send_json(self, **msg) -> None:
         await self.ws.send(json.dumps({"session_id": self.session_id, **msg}, ensure_ascii=False))
@@ -198,6 +207,10 @@ class Session:
                 # The connection stays open so announcements can reach the idle device.
                 asyncio.create_task(self.send_json(type="system", command="idle"))
             return
+        if self.vad.in_speech and self.vad.silence_ms == 0:
+            self._drop_speculation()  # speaking (again): any early transcript is now incomplete
+        elif self.vad.silence_ms >= SPECULATE_MS and self.speculative is None and event != "end":
+            self.speculative = asyncio.create_task(self.backends.transcribe(normalize(b"".join(self.frames))))
         if event == "end" or len(self.frames) * FRAME_MS >= self.cfg.max_utterance_ms:
             await self.end_utterance("silence" if event == "end" else "max length")
 
@@ -218,13 +231,14 @@ class Session:
         self.frames = []
         if self.cfg.debug_audio_dir:
             save_wav(self.cfg.debug_audio_dir, pcm)
-        self.turn = asyncio.create_task(self.run_turn(pcm))
+        stt, self.speculative = self.speculative, None  # same audio minus trailing silence: reuse it
+        self.turn = asyncio.create_task(self.run_turn(pcm, stt))
 
-    async def run_turn(self, pcm: bytes) -> None:
+    async def run_turn(self, pcm: bytes, stt: asyncio.Task | None = None) -> None:
         t0 = time.monotonic()
         ms = lambda: int((time.monotonic() - t0) * 1000)  # noqa: E731
         try:
-            transcript = await self.backends.transcribe(pcm)
+            transcript = await (stt if stt is not None else self.backends.transcribe(pcm))
         except services.ServiceError as exc:
             log.error("turn failed at STT: %s", exc)
             await self.send_json(type="alert", status="error", message="STT error", emotion="sad")

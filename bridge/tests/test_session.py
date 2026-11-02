@@ -29,10 +29,12 @@ class Fakes:
         self.transcript, self.reply, self.hermes_error = transcript, reply, hermes_error
         self.hermes_gate = hermes_gate  # if set, Hermes answers only after the test opens it
         self.asked, self.spoken, self.stt_bytes = [], [], 0
+        self.stt_calls: list[int] = []  # pcm length of every STT call (speculative ones included)
 
     async def transcribe(self, pcm: bytes) -> str:
         self.stt_bytes = len(pcm)
-        return self.transcript
+        self.stt_calls.append(len(pcm))
+        return self.transcript if "{n}" not in self.transcript else self.transcript.format(n=len(pcm))
 
     async def ask(self, text: str) -> str:
         self.asked.append(text)
@@ -248,6 +250,37 @@ async def test_acknowledgement_after_wake_word_still_goes_to_hermes(bridge):
         await talk(ws)
         await collect_turn(ws)
     assert fakes.asked == ["收到"]
+
+
+async def test_speculative_stt_result_is_reused_at_end_of_speech(bridge, monkeypatch):
+    fakes = Fakes()
+    url = await bridge(fakes)
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        monkeypatch.setattr(server, "SPECULATE_MS", 10_000)  # never speculate: STT only after end of speech
+        await talk(ws)
+        await collect_turn(ws)
+        monkeypatch.setattr(server, "SPECULATE_MS", 420)
+        await talk(ws)  # follow-up turn, same audio
+        await collect_turn(ws)
+    late, early = fakes.stt_calls
+    # one STT call per turn either way, but the speculative one ran before the end-of-speech silence accumulated
+    assert early < late and fakes.asked == ["開客廳燈", "開客廳燈"]
+
+
+async def test_speech_resuming_after_a_pause_discards_the_speculative_stt(bridge):
+    fakes = Fakes(transcript="開燈{n}")
+    url = await bridge(fakes)
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+        await handshake(ws)
+        await ws.send(json.dumps({"type": "listen", "state": "start", "mode": "auto"}))
+        # speech, a 600 ms mid-sentence pause (past the speculative point, short of end-of-speech), speech, silence
+        for frame in (opus_frames(0.0, 3) + opus_frames(0.3, 10) + opus_frames(0.0, 10) + opus_frames(0.3, 10)
+                      + opus_frames(0.0, 25)):
+            await ws.send(frame)
+        await collect_turn(ws)
+    # the transcript used covers both halves (>= 30 frames of speech + pause), not the stale first-half one
+    assert len(fakes.asked) == 1 and int(fakes.asked[0].removeprefix("開燈")) >= 30 * FRAME * 2
 
 
 async def test_keepalive_reaches_idle_device(bridge, monkeypatch):
