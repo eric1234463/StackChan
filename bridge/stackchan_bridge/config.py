@@ -10,6 +10,7 @@ DEFAULT_INSTRUCTIONS = (
     "唔好用 markdown、表情符號、列表或者英文。"
     "你有 Home Assistant 工具：查詢或者控制家居時，直接用 ha_get_state / ha_call_service"
     "（唔識 entity 先用 ha 相關工具搵），唔好用 terminal、唔好讀 skill 檔案。"
+    "開關設備只需要 ha_call_service 一次，做完直接答，唔使再用 ha_get_state 確認。"
     "語音轉文字有好多同音錯字（例如「幫我識客聽燈槽」即係「幫我開客廳燈」），"
     "要按上文估最可能嘅指令去做，唔好話聽唔明。"
 )
@@ -26,6 +27,12 @@ class Config:
     tts_uri: str = "tcp://127.0.0.1:10201"
     hermes_url: str = "http://127.0.0.1:8642"
     hermes_conversation: str = "stackchan"
+    # One Hermes session per burst of use: a day-long session reached ~170 messages / 67k tokens per call.
+    hermes_session_idle_s: float = 900.0
+    hermes_model: str = ""  # with hermes_provider, overrides the profile's model for voice turns; "" = Hermes default
+    hermes_provider: str = ""
+    # The profile default is "high"; on 5 HA turns low/minimal took 19-36 s vs 38 s (provider noise dominates).
+    hermes_reasoning_effort: str = ""  # none|minimal|low|medium|high; "" = Hermes default
     hermes_timeout_s: float = 120.0
     instructions: str = DEFAULT_INSTRUCTIONS
     stt_timeout_s: float = 30.0
@@ -78,6 +85,10 @@ def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Con
         tts_uri=env.get("TTS_URI", defaults.tts_uri),
         hermes_url=env.get("HERMES_URL", defaults.hermes_url).rstrip("/"),
         hermes_conversation=env.get("HERMES_CONVERSATION", defaults.hermes_conversation),
+        hermes_session_idle_s=float(env.get("HERMES_SESSION_IDLE_S", defaults.hermes_session_idle_s)),
+        hermes_model=env.get("HERMES_MODEL", ""),
+        hermes_provider=env.get("HERMES_PROVIDER", ""),
+        hermes_reasoning_effort=env.get("HERMES_REASONING_EFFORT", ""),
         hermes_timeout_s=float(env.get("HERMES_TIMEOUT_S", defaults.hermes_timeout_s)),
         instructions=env.get("HERMES_INSTRUCTIONS", defaults.instructions),
         vad_rms_threshold=float(env.get("VAD_RMS_THRESHOLD", defaults.vad_rms_threshold)),

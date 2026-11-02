@@ -67,13 +67,18 @@ async def synthesize(uri: str, text: str, timeout_s: float) -> tuple[np.ndarray,
 
 
 async def ask_hermes(client: httpx.AsyncClient, url: str, api_key: str, conversation: str,
-                     instructions: str, text: str, timeout_s: float) -> str:
+                     instructions: str, text: str, timeout_s: float, model: str = "", provider: str = "",
+                     reasoning_effort: str = "") -> str:
+    body = {"model": model or "hermes-agent", "conversation": conversation, "instructions": instructions, "input": text}
+    if provider:  # Hermes ignores a bare model without a provider unless direct_model_requests is on
+        body["provider"] = provider
+    if reasoning_effort:
+        body["model_options"] = {"reasoning_effort": reasoning_effort}
     try:
         response = await client.post(
             f"{url}/v1/responses",
             headers={"Authorization": f"Bearer {api_key}"},
-            json={"model": "hermes-agent", "conversation": conversation,
-                  "instructions": instructions, "input": text},
+            json=body,
             timeout=timeout_s,
         )
     except httpx.HTTPError as exc:

@@ -48,17 +48,30 @@ class Backends:
     synthesize: Callable[[str], Awaitable[tuple[np.ndarray, int]]]
 
 
-def daily_conversation(base: str, now: float | None = None) -> str:
-    """One Hermes session per local calendar day, so history does not grow forever."""
-    return f"{base}-{time.strftime('%Y-%m-%d', time.localtime(now))}"
+class Conversation:
+    """Hermes session name: a fresh session after idle_s without a turn, so each call's context stays small
+    (every turn resends the whole session) while follow-ups within a burst keep their context."""
+
+    def __init__(self, base: str, idle_s: float) -> None:
+        self.base, self.idle_s = base, idle_s
+        self._name, self._last = "", float("-inf")
+
+    def name(self, now: float | None = None) -> str:
+        now = time.time() if now is None else now
+        if now - self._last > self.idle_s:
+            self._name = f"{self.base}-{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}"
+        self._last = now
+        return self._name
 
 
 def real_backends(cfg: Config, http: httpx.AsyncClient) -> Backends:
+    conversation = Conversation(cfg.hermes_conversation, cfg.hermes_session_idle_s)
     return Backends(
         transcribe=lambda pcm: services.transcribe(cfg.stt_uri, pcm, cfg.stt_language, cfg.stt_timeout_s),
-        ask=lambda text: services.ask_hermes(http, cfg.hermes_url, cfg.hermes_api_key,
-                                             daily_conversation(cfg.hermes_conversation),
-                                             cfg.instructions, text, cfg.hermes_timeout_s),
+        ask=lambda text: services.ask_hermes(http, cfg.hermes_url, cfg.hermes_api_key, conversation.name(),
+                                             cfg.instructions, text, cfg.hermes_timeout_s,
+                                             model=cfg.hermes_model, provider=cfg.hermes_provider,
+                                             reasoning_effort=cfg.hermes_reasoning_effort),
         synthesize=lambda text: services.synthesize(cfg.tts_uri, text, cfg.tts_timeout_s),
     )
 

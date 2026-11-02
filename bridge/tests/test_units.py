@@ -1,6 +1,10 @@
+import json
+import time
+
+import httpx
 import numpy as np
 
-from stackchan_bridge import config
+from stackchan_bridge import config, services
 from stackchan_bridge.audio import FRAME_MS, IN_RATE, Vad
 from stackchan_bridge.text import clean, is_meaningful, split_sentences
 
@@ -72,12 +76,33 @@ def test_normalize_boosts_quiet_audio_with_gain_cap():
     assert rms(normalize(very_quiet)) < rms(very_quiet) * 8.01  # gain capped at 8x
 
 
-def test_daily_conversation_changes_at_local_midnight():
-    import time as _time
-    from stackchan_bridge.server import daily_conversation
-    noon = _time.mktime((2026, 11, 1, 12, 0, 0, 0, 0, -1))
-    assert daily_conversation("stackchan", noon) == "stackchan-2026-11-01"
-    assert daily_conversation("stackchan", noon + 12 * 3600) == "stackchan-2026-11-02"
+def test_conversation_rotates_after_idle_gap_only():
+    from stackchan_bridge.server import Conversation
+    t0 = time.mktime((2026, 11, 2, 17, 44, 11, 0, 0, -1))
+    conv = Conversation("stackchan", idle_s=900)
+    first = conv.name(t0)
+    assert first == "stackchan-20261102-174411"
+    assert conv.name(t0 + 600) == first  # follow-up within the window keeps the context
+    assert conv.name(t0 + 600 + 899) == first  # the window counts from the last turn
+    assert conv.name(t0 + 600 + 899 + 901) == "stackchan-20261102-182411"
+
+
+async def test_ask_hermes_sends_model_provider_effort_only_when_set():
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"status": "completed", "output": [
+            {"type": "message", "content": [{"type": "output_text", "text": "好"}]}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await services.ask_hermes(client, "http://h", "k", "c", "i", "開燈", 5)
+        await services.ask_hermes(client, "http://h", "k", "c", "i", "開燈", 5,
+                                  model="muse-spark-1.3-contributor", provider="opencode-go",
+                                  reasoning_effort="low")
+    assert sent[0]["model"] == "hermes-agent" and "provider" not in sent[0] and "model_options" not in sent[0]
+    assert sent[1]["model"] == "muse-spark-1.3-contributor" and sent[1]["provider"] == "opencode-go"
+    assert sent[1]["model_options"] == {"reasoning_effort": "low"}
 
 
 def test_loud_hits_target_level_and_never_clips():
