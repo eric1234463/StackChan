@@ -229,9 +229,10 @@ void CoreS3AudioCodec::EnableOutput(bool enable) {
             // esp_codec_dev's open resets the AW88298 and writes BSTCTRL2 (0x61) = 0x0673, boost off;
             // 0x6673 is the chip default with the boost converter on (more output swing).
             uint8_t boost_on[2] = {0x66, 0x73};
-            if (out_ctrl_if_->write_reg(out_ctrl_if_, 0x61, 1, boost_on, 2) != 0) {
-                ESP_LOGW(TAG, "AW88298 boost enable failed");
-            }
+            uint8_t readback[2] = {0, 0};
+            int wr = out_ctrl_if_->write_reg(out_ctrl_if_, 0x61, 1, boost_on, 2);
+            int rd = out_ctrl_if_->read_reg(out_ctrl_if_, 0x61, 1, readback, 2);
+            ESP_LOGI(TAG, "AW88298 BSTCTRL2 write %d read %d -> 0x%02x%02x", wr, rd, readback[0], readback[1]);
         }
 #endif
         ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, output_volume_));

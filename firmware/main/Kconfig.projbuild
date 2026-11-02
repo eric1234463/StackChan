@@ -56,10 +56,11 @@ config HERMES_STATE_IMAGES
 
 config HERMES_SPEAKER_BOOST
     bool "Enable the AW88298 boost converter (louder speaker; esp_codec_dev turns it off)"
-    default y
+    default n
     help
         Writes BSTCTRL2 = 0x6673 (chip default, boost on) after every output open; esp_codec_dev writes
-        0x0673 (boost off). Turn off if the device resets or browns out during loud playback.
+        0x0673 (boost off). Measured 2026-11-02: register reads back 0x6673 but no audible gain on the
+        CoreS3 speaker at volume 100, so it stays off (no benefit, brown-out risk).
 
 config HERMES_MICRO_WAKE_WORD
     bool "Use on-device microWakeWord model (main/hal/hermes/assets/hermes_wei_eric.tflite)"
