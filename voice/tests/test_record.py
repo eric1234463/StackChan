@@ -19,7 +19,7 @@ def test_clean_take_has_no_problems():
 
 
 def test_flags_short_clipped_and_noisy_takes():
-    assert any("length" in p for p in check(take(2, 0.3, 0.0005), RATE)[1])
+    assert any("length" in p for p in check(take(1.5, 0.3, 0.0005), RATE)[1])
     assert any("clipping" in p for p in check(take(6, 1.2, 0.0005), RATE)[1])
     assert any("too quiet" in p for p in check(take(6, 0.01, 0.0001), RATE)[1])
     assert any("background noise" in p for p in check(take(6, 0.3, 0.01), RATE)[1])
