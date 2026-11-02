@@ -69,3 +69,14 @@ def test_trim_noise_floor_ignores_digital_silence():
     speech = (np.sin(2 * np.pi * 220 * t) * 10 ** (-13 / 20) * np.sqrt(2)).astype(np.float32)
     out = tts.trim(np.concatenate([noise(0.5), speech, noise(0.4), np.zeros(int(rate * 0.4), np.float32), noise(0.2)]))
     assert len(out) / rate < 1.0 + tts.LEAD_KEEP_S + tts.TAIL_KEEP_S + 0.05
+
+
+def test_long_internal_pauses_are_shortened_short_ones_kept():
+    # The eric voice copies read-aloud comma pauses (400-680 ms); conversation wants ~200 ms.
+    rng = np.random.default_rng(2)
+    rate = tts.RATE
+    noise = lambda s: (rng.standard_normal(int(rate * s)) * 10 ** (-50 / 20)).astype(np.float32)
+    tone = lambda s: (np.sin(2 * np.pi * 220 * np.arange(int(rate * s)) / rate) * 0.3).astype(np.float32)
+    audio = np.concatenate([tone(0.5), noise(0.6), tone(0.5), noise(0.1), tone(0.5)])
+    out = tts.cap_pauses(audio)
+    assert abs(len(out) / rate - (1.5 + tts.MAX_PAUSE_S + 0.1)) < 0.05

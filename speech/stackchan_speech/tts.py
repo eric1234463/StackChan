@@ -26,6 +26,7 @@ MAX_CHUNK_CHARS = 45  # model card: longer inputs drop words; split at punctuati
 LEAD_KEEP_S, TAIL_KEEP_S = 0.04, 0.15  # every generation starts with 0.5-1.2 s of silence
 SECONDS_PER_CHAR_MAX = 0.4  # measured ~0.25-0.3 s per Cantonese character
 MAX_ATTEMPTS = 3
+MAX_PAUSE_S = 0.22  # conversational comma pause, before --speed (0.18 s at 1.2x)
 
 
 def load(model_dir: str):
@@ -54,21 +55,49 @@ def chunks(text: str) -> list[str]:
     return [c.strip() for c in out if c.strip()]
 
 
-def trim(audio: np.ndarray) -> np.ndarray:
-    """Cut the generated lead-in/trailing silence (20 ms frames). A trained voice also reproduces its recording
-    room's hiss (~37 dB below peak), so "silence" is anything under 10 dB above the noise floor (the 10th-percentile
-    non-silent frame; every generation has >=0.5 s of lead-in), and never less than 40 dB or more than 20 dB below peak."""
+def _voiced(audio: np.ndarray) -> tuple[np.ndarray, int]:
+    """Per 20 ms frame: is it above silence? A trained voice also reproduces its recording room's hiss (~37 dB
+    below peak), so "silence" is anything under 10 dB above the noise floor (the 10th-percentile non-silent frame;
+    every generation has >=0.5 s of lead-in), and never less than 40 dB or more than 20 dB below peak."""
     frame = int(RATE * 0.02)
     energy = np.sqrt([np.mean(audio[i:i + frame] ** 2) for i in range(0, max(len(audio) - frame, 1), frame)])
     peak = float(energy.max())
     audible = energy[energy > 3e-4]  # digital-silence stretches (exact zeros) are not the noise floor
     floor = float(np.percentile(audible, 10)) * 10 ** (10 / 20) if audible.size else 0.0
-    voiced = np.where(energy > max(min(floor, peak * 0.1), peak * 0.01, 1e-4))[0]
+    return energy > max(min(floor, peak * 0.1), peak * 0.01, 1e-4), frame
+
+
+def trim(audio: np.ndarray) -> np.ndarray:
+    """Cut the generated lead-in/trailing silence."""
+    is_voiced, frame = _voiced(audio)
+    voiced = np.where(is_voiced)[0]
     if voiced.size == 0:
         return audio[:0]
     start = max(voiced[0] * frame - int(RATE * LEAD_KEEP_S), 0)
     end = min((voiced[-1] + 1) * frame + int(RATE * TAIL_KEEP_S), len(audio))
     return audio[start:end]
+
+
+def cap_pauses(audio: np.ndarray) -> np.ndarray:
+    """Shorten internal silences to MAX_PAUSE_S (keeping both edges of each pause): the eric voice copies the
+    400-680 ms comma pauses of read-aloud takes, which sound like stalls in conversation."""
+    if not len(audio):
+        return audio
+    is_voiced, frame = _voiced(audio)
+    keep = int(RATE * MAX_PAUSE_S) // 2
+    out, pos, i = [], 0, 0
+    while i < len(is_voiced):
+        if is_voiced[i]:
+            i += 1
+            continue
+        j = i
+        while j < len(is_voiced) and not is_voiced[j]:
+            j += 1
+        if 0 < i and j < len(is_voiced) and (j - i) * frame > 2 * keep:  # internal pause only
+            out += [audio[pos:i * frame + keep]]
+            pos = j * frame - keep
+        i = j
+    return np.concatenate(out + [audio[pos:]])
 
 
 def time_stretch(audio: np.ndarray, speed: float) -> np.ndarray:
@@ -101,8 +130,9 @@ def synth_chunk(model_dir: str, text: str, voice: str = DEFAULT_VOICE, speed: fl
     limit_s = len(re.sub(r"\W", "", text)) * SECONDS_PER_CHAR_MAX + 1.0
     best = None
     for attempt in range(MAX_ATTEMPTS):
-        audio = trim(np.concatenate([np.array(r.audio, dtype=np.float32)
-                                     for r in model.generate(text=text, voice=voice, lang_code="chinese")]))
+        # cap pauses before trimming: the noise-floor estimate needs the generated lead-in hiss
+        audio = trim(cap_pauses(np.concatenate([np.array(r.audio, dtype=np.float32)
+                                     for r in model.generate(text=text, voice=voice, lang_code="chinese")])))
         if best is None or len(audio) < len(best):
             best = audio
         if len(audio) / RATE <= limit_s:
