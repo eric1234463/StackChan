@@ -106,9 +106,9 @@ async def test_full_turn(bridge):
         texts, audio = await collect_turn(ws)
 
     kinds = [(m["type"], m.get("state")) for m in texts]
-    assert kinds == [("stt", None), ("llm", None), ("tts", "start"), ("llm", None), ("tts", "sentence_start"),
-                     ("tts", "stop")]
-    assert texts[3]["emotion"] == "working" and texts[4]["text"] == "好，開咗。"
+    assert kinds == [("stt", None), ("llm", None), ("tts", "start"), ("llm", None), ("llm", None),
+                     ("tts", "sentence_start"), ("tts", "stop")]
+    assert [texts[3]["emotion"], texts[4]["emotion"]] == ["nod", "working"] and texts[5]["text"] == "好，開咗。"
     assert texts[0]["text"] == "開客廳燈" and all(m["session_id"] == session_id for m in texts)
     assert fakes.asked == ["開客廳燈"] and fakes.spoken == [ACK, "好，開咗。"]
     assert fakes.stt_bytes >= 10 * FRAME * 2  # speech frames reached STT (plus preroll)

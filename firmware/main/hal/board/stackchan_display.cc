@@ -5,6 +5,7 @@
  */
 #include <sdkconfig.h>
 #if CONFIG_HERMES_STATE_IMAGES
+#include "hal/hermes/head_cues.h"
 #include "hal/hermes/state_screen.h"
 #include <application.h>
 #include <wifi_manager.h>
@@ -332,6 +333,10 @@ void StackChanAvatarDisplay::SetEmotion(const char* emotion)
     hermes_screen::Init();
     hermes_screen::OnEmotion(emotion);
 #endif
+    if (strcmp(emotion, "nod") == 0) {  // Hermes bridge: acknowledgement is playing; a gesture, not a face
+        hermes_head::Nod();
+        return;
+    }
 
     // ESP_LOGE(TAG, "SetEmotion: %s", emotion);
 
@@ -531,6 +536,9 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
         GetHAL().refreshRgb();
 
     } else if (strcmp(status, Lang::Strings::STANDBY) == 0) {
+        if (!_is_xiaozhi_ready) {
+            hermes_head::FaceForward();  // Hermes: first standby after boot
+        }
         _is_xiaozhi_ready = true;
 
         if (speaking_modifier_id_ >= 0) {

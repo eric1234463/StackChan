@@ -261,6 +261,7 @@ class Session:
                 ack = await self.ack.get()
                 if ack:
                     log.info("ack audio %d ms after end of speech", int((time.monotonic() - t0) * 1000))
+                    await self.send_json(type="llm", emotion="nod")  # firmware nods twice
                     await self.stream(_once(ack))
                 await self.send_json(type="llm", emotion="working")
             await self.stream(self.reply_sentences(await reply, t0))
