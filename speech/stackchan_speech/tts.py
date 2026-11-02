@@ -21,7 +21,7 @@ _MODEL = None
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
 
 RATE = 24000
-VOICE_NAME = "hk_voice_343"
+DEFAULT_VOICE = "hk_voice_343"  # the adapter's voice; a voice trained with voice/train/train.sh adds e.g. "eric"
 MAX_CHUNK_CHARS = 45  # model card: longer inputs drop words; split at punctuation
 LEAD_KEEP_S, TAIL_KEEP_S = 0.04, 0.15  # every generation starts with 0.5-1.2 s of silence
 SECONDS_PER_CHAR_MAX = 0.4  # measured ~0.25-0.3 s per Cantonese character
@@ -66,14 +66,14 @@ def trim(audio: np.ndarray) -> np.ndarray:
     return audio[start:end]
 
 
-def synth_chunk(model_dir: str, text: str) -> bytes:
+def synth_chunk(model_dir: str, text: str, voice: str = DEFAULT_VOICE) -> bytes:
     model = load(model_dir)
     # Sampling sometimes keeps talking after the text ("收到，幫緊你" + 3 s of babble); far too long = retry.
     limit_s = len(re.sub(r"\W", "", text)) * SECONDS_PER_CHAR_MAX + 1.0
     best = None
     for attempt in range(MAX_ATTEMPTS):
         audio = trim(np.concatenate([np.array(r.audio, dtype=np.float32)
-                                     for r in model.generate(text=text, voice=VOICE_NAME, lang_code="chinese")]))
+                                     for r in model.generate(text=text, voice=voice, lang_code="chinese")]))
         if best is None or len(audio) < len(best):
             best = audio
         if len(audio) / RATE <= limit_s:
@@ -82,25 +82,25 @@ def synth_chunk(model_dir: str, text: str) -> bytes:
     return (np.clip(best, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
 
 
-def make_info() -> Info:
+def make_info(voice: str) -> Info:
     attribution = Attribution(name="jmtl", url="https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts")
     return Info(tts=[TtsProgram(
         name="qwen3-tts-hk", description="Qwen3-TTS 1.7B + HK Cantonese LoRA (MLX 8-bit)",
         attribution=attribution, installed=True, version="0.0.5",
-        voices=[TtsVoice(name=VOICE_NAME, description="HK Cantonese female (synthetic, Common Voice CC-0 donor)",
+        voices=[TtsVoice(name=voice, description=f"HK Cantonese, voice {voice} (synthetic)",
                          attribution=attribution, installed=True, version="0.0.5",
                          languages=["yue", "zh-HK", "zh"])],
     )])
 
 
 class TtsHandler(AsyncEventHandler):
-    def __init__(self, *args, model_dir: str, **kwargs) -> None:
+    def __init__(self, *args, model_dir: str, voice: str, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.model_dir = model_dir
+        self.model_dir, self.voice = model_dir, voice
 
     async def handle_event(self, event: Event) -> bool:
         if Describe.is_type(event.type):
-            await self.write_event(make_info().event())
+            await self.write_event(make_info(self.voice).event())
             return True
         if Synthesize.is_type(event.type):
             text = Synthesize.from_event(event).text
@@ -109,7 +109,7 @@ class TtsHandler(AsyncEventHandler):
             await self.write_event(AudioStart(rate=RATE, width=2, channels=1).event())
             samples = 0
             for piece in chunks(text):  # stream chunk by chunk so long replies start sooner
-                pcm = await loop.run_in_executor(_EXECUTOR, synth_chunk, self.model_dir, piece)
+                pcm = await loop.run_in_executor(_EXECUTOR, synth_chunk, self.model_dir, piece, self.voice)
                 samples += len(pcm) // 2
                 await self.write_event(AudioChunk(audio=pcm, rate=RATE, width=2, channels=1).event())
             await self.write_event(AudioStop().event())
@@ -123,13 +123,15 @@ async def main() -> None:
     parser.add_argument("--uri", default="tcp://0.0.0.0:10201")
     parser.add_argument("--model-dir", required=True,
                         help="Merged Qwen3-TTS HK Cantonese MLX model (apply_adapter.py + mlx_audio.convert)")
+    parser.add_argument("--voice", default=DEFAULT_VOICE, help="speaker name baked into the model (spk_id)")
     parser.add_argument("--zeroconf", nargs="?", const="canto-tts",
                         help="Advertise via zeroconf for HA auto-discovery")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     _LOGGER.info("Loading %s", args.model_dir)
-    await asyncio.get_running_loop().run_in_executor(_EXECUTOR, synth_chunk, args.model_dir, "你好。")  # warm-up
-    _LOGGER.info("Model ready")
+    # warm-up; also fails fast if --voice is not in the model
+    await asyncio.get_running_loop().run_in_executor(_EXECUTOR, synth_chunk, args.model_dir, "你好。", args.voice)
+    _LOGGER.info("Model ready, voice %s", args.voice)
     if args.zeroconf:
         from zeroconf.asyncio import AsyncServiceInfo, AsyncZeroconf
         zc = AsyncZeroconf()
@@ -143,7 +145,7 @@ async def main() -> None:
         await zc.async_register_service(info)
         _LOGGER.info("Zeroconf advertised as %s", args.zeroconf)
     await AsyncServer.from_uri(args.uri).run(
-        lambda *a, **k: TtsHandler(*a, model_dir=args.model_dir, **k))
+        lambda *a, **k: TtsHandler(*a, model_dir=args.model_dir, voice=args.voice, **k))
 
 
 if __name__ == "__main__":

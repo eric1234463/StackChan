@@ -12,6 +12,8 @@
     <string>tcp://0.0.0.0:10201</string>
     <string>--model-dir</string>
     <string>__TTS_MODEL_DIR__</string>
+    <string>--voice</string>
+    <string>__TTS_VOICE__</string>
     <string>--zeroconf</string>
     <string>canto-tts</string>
   </array>
