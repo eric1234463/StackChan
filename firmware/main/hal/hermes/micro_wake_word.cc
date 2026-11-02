@@ -2,10 +2,15 @@
 #if CONFIG_HERMES_MICRO_WAKE_WORD
 #include "micro_wake_word.h"
 
+#include <audio_service.h>  // AS_OPUS_ENC_CONFIG: the uplink encoder settings
+
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 
 #include <algorithm>
+#include <cstdio>
+
+#include <esp_timer.h>
 
 #include <frontend_util.h>
 #include <tensorflow/lite/micro/micro_allocator.h>
@@ -92,6 +97,9 @@ MicroWakeWord::~MicroWakeWord()
     }
     heap_caps_free(arena_);
     heap_caps_free(var_arena_);
+    heap_caps_free(history_);
+    heap_caps_free(encode_stack_);
+    heap_caps_free(encode_tcb_);
 }
 
 bool MicroWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* /*models_list*/)
@@ -114,7 +122,8 @@ bool MicroWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* /*models_list*
 
     arena_     = static_cast<uint8_t*>(heap_caps_malloc(kTensorArenaSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     var_arena_ = static_cast<uint8_t*>(heap_caps_malloc(kVarArenaSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (arena_ == nullptr || var_arena_ == nullptr) {
+    history_   = static_cast<int16_t*>(heap_caps_malloc(kHistorySamples * sizeof(int16_t), MALLOC_CAP_SPIRAM));
+    if (arena_ == nullptr || var_arena_ == nullptr || history_ == nullptr) {
         ESP_LOGE(TAG, "Arena allocation failed");
         return false;
     }
@@ -156,6 +165,7 @@ void MicroWakeWord::ResetDetector()
     features_filled_ = 0;
     recent_.fill(0);
     recent_index_      = 0;
+    history_filled_    = 0;  // the clip covers only audio since this reset
     ignore_inferences_ = kSlidingWindow;  // let the streaming state settle after a reset
 }
 
@@ -189,6 +199,11 @@ void MicroWakeWord::Feed(const std::vector<int16_t>& data)
     for (size_t i = 0; i < data.size(); i += channels) {
         mono.push_back(data[i]);
     }
+    for (int16_t sample : mono) {
+        history_[history_pos_] = sample;
+        history_pos_           = (history_pos_ + 1) % kHistorySamples;
+    }
+    history_filled_ = std::min(history_filled_ + mono.size(), kHistorySamples);
 
     size_t offset = 0;
     while (offset < mono.size()) {
@@ -242,9 +257,106 @@ bool MicroWakeWord::InferAndCheck()
     if (sum < kProbabilityCutoff * 255.0f * kSlidingWindow) {
         return false;
     }
-    ESP_LOGI(TAG, "Detected %s (mean probability %.2f)", wake_word_.c_str(), sum / (255.0f * kSlidingWindow));
+    // Oldest first; logged and sent to the bridge so false triggers can be told apart by score.
+    char detail[96];
+    int n = snprintf(detail, sizeof(detail), "\"score\":%.2f,\"window\":[", sum / (255.0f * kSlidingWindow));
+    for (int i = 0; i < kSlidingWindow; ++i) {
+        n += snprintf(detail + n, sizeof(detail) - n, "%s%.2f", i ? "," : "",
+                      recent_[(recent_index_ + i) % kSlidingWindow] / 255.0f);
+    }
+    snprintf(detail + n, sizeof(detail) - n, "]");
+    detail_ = detail;
+    ESP_LOGI(TAG, "Detected %s (%s)", wake_word_.c_str(), detail);
     ignore_inferences_ = kRefractoryInferences;
     return true;
+}
+
+void MicroWakeWord::EncodeWakeWordData()
+{
+    {
+        // A clip nobody consumed (session aborted) may still be encoding; its task owns the static stack.
+        std::unique_lock<std::mutex> lock(opus_mutex_);
+        opus_cv_.wait(lock, [this]() { return !encoding_; });
+        opus_.clear();
+        encoding_ = true;
+    }
+    {
+        // Feed is stopped after a detection (running_ false), so the history is stable here.
+        std::lock_guard<std::mutex> lock(mutex_);
+        encode_pcm_.resize(history_filled_);
+        size_t start = (history_pos_ + kHistorySamples - history_filled_) % kHistorySamples;
+        for (size_t i = 0; i < history_filled_; ++i) {
+            encode_pcm_[i] = history_[(start + i) % kHistorySamples];
+        }
+    }
+    // Opus encoding needs a large stack; keep it in PSRAM (as upstream CustomWakeWord does).
+    constexpr size_t kStackSize = 4096 * 7;
+    if (encode_stack_ == nullptr) {
+        encode_stack_ = static_cast<StackType_t*>(heap_caps_malloc(kStackSize, MALLOC_CAP_SPIRAM));
+        encode_tcb_   = static_cast<StaticTask_t*>(heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL));
+    }
+    if (encode_stack_ == nullptr || encode_tcb_ == nullptr) {
+        ESP_LOGE(TAG, "Wake audio encoder allocation failed");
+        std::lock_guard<std::mutex> lock(opus_mutex_);
+        encoding_ = false;
+        opus_.emplace_back();  // end of (empty) clip
+        opus_cv_.notify_all();
+        return;
+    }
+    xTaskCreateStatic(
+        [](void* arg) {
+            auto* self = static_cast<MicroWakeWord*>(arg);
+            auto finish = [self]() {
+                std::lock_guard<std::mutex> lock(self->opus_mutex_);
+                self->encoding_ = false;
+                self->opus_.emplace_back();  // end of clip
+                self->opus_cv_.notify_all();
+            };
+            int64_t t0                        = esp_timer_get_time();
+            esp_opus_enc_config_t cfg         = AS_OPUS_ENC_CONFIG();
+            void* encoder                     = nullptr;
+            esp_opus_enc_open(&cfg, sizeof(cfg), &encoder);
+            if (encoder == nullptr) {
+                ESP_LOGE(TAG, "Wake audio encoder open failed");
+                finish();
+                vTaskDelete(nullptr);
+                return;
+            }
+            int frame_bytes = 0, out_size = 0;
+            esp_opus_enc_get_frame_size(encoder, &frame_bytes, &out_size);
+            const size_t frame = frame_bytes / sizeof(int16_t);
+            std::vector<uint8_t> out_buf(out_size);
+            int packets = 0;
+            for (size_t i = 0; i + frame <= self->encode_pcm_.size(); i += frame) {
+                esp_audio_enc_in_frame_t in   = {};
+                esp_audio_enc_out_frame_t out = {};
+                in.buffer  = reinterpret_cast<uint8_t*>(self->encode_pcm_.data() + i);
+                in.len     = frame_bytes;
+                out.buffer = out_buf.data();
+                out.len    = out_size;
+                // Zero-byte (DTX) packets are skipped: an empty packet marks the end of the clip.
+                if (esp_opus_enc_process(encoder, &in, &out) == ESP_AUDIO_ERR_OK && out.encoded_bytes > 0) {
+                    std::lock_guard<std::mutex> lock(self->opus_mutex_);
+                    self->opus_.emplace_back(out_buf.begin(), out_buf.begin() + out.encoded_bytes);
+                    self->opus_cv_.notify_all();
+                    ++packets;
+                }
+            }
+            esp_opus_enc_close(encoder);
+            ESP_LOGI(TAG, "Wake audio: %d packets in %d ms", packets, (int)((esp_timer_get_time() - t0) / 1000));
+            finish();
+            vTaskDelete(nullptr);
+        },
+        "encode_wake_word", kStackSize, this, 2, encode_stack_, encode_tcb_);
+}
+
+bool MicroWakeWord::GetWakeWordOpus(std::vector<uint8_t>& opus)
+{
+    std::unique_lock<std::mutex> lock(opus_mutex_);
+    opus_cv_.wait(lock, [this]() { return !opus_.empty(); });
+    opus.swap(opus_.front());
+    opus_.pop_front();
+    return !opus.empty();
 }
 
 #endif  // CONFIG_HERMES_MICRO_WAKE_WORD

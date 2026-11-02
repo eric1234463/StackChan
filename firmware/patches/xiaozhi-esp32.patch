@@ -1,5 +1,5 @@
 diff --git a/main/application.cc b/main/application.cc
-index d69d43d..b51e728 100644
+index d69d43d..e39e533 100644
 --- a/main/application.cc
 +++ b/main/application.cc
 @@ -1,14 +1,15 @@
@@ -201,7 +201,7 @@ index d69d43d..b51e728 100644
              // Schedule to let the state change be processed first (UI update),
              // then continue with OpenAudioChannel which may block for ~1 second
              Schedule([this, wake_word]() {
-@@ -819,14 +830,43 @@ void Application::HandleWakeWordDetectedEvent() {
+@@ -819,14 +830,47 @@ void Application::HandleWakeWordDetectedEvent() {
      }
  }
  
@@ -242,10 +242,23 @@ index d69d43d..b51e728 100644
 +            while (audio_service_.PopPacketFromSendQueue());
 +            audio_service_.EnableVoiceProcessing(false);
 +            while (audio_service_.PopPacketFromSendQueue());
++#if CONFIG_SEND_WAKE_WORD_DATA
++            // Hermes: wait for the wake audio encoder to finish before the next detection reuses it.
++            while (audio_service_.PopWakeWordPacket());
++#endif
              audio_service_.EnableWakeWordDetection(true);
              return;
          }
-@@ -869,6 +909,7 @@ void Application::HandleStateChangedEvent() {
+@@ -839,7 +883,7 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+         protocol_->SendAudio(std::move(packet));
+     }
+     // Set the chat state to wake word detected
+-    protocol_->SendWakeWordDetected(wake_word);
++    protocol_->SendWakeWordDetected(wake_word, audio_service_.GetLastWakeWordDetail());
+ 
+     // Set flag to play popup sound after state changes to listening
+     play_popup_on_listening_ = true;
+@@ -869,6 +913,7 @@ void Application::HandleStateChangedEvent() {
              display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
              audio_service_.EnableVoiceProcessing(false);
              audio_service_.EnableWakeWordDetection(true);
@@ -253,7 +266,7 @@ index d69d43d..b51e728 100644
              break;
          case kDeviceStateConnecting:
              display->SetStatus(Lang::Strings::CONNECTING);
-@@ -889,7 +930,13 @@ void Application::HandleStateChangedEvent() {
+@@ -889,7 +934,13 @@ void Application::HandleStateChangedEvent() {
                  
                  // Send the start listening command
                  protocol_->SendStartListening(listening_mode_);
@@ -268,7 +281,7 @@ index d69d43d..b51e728 100644
              }
  
  #ifdef CONFIG_WAKE_WORD_DETECTION_IN_LISTENING
-@@ -908,6 +955,7 @@ void Application::HandleStateChangedEvent() {
+@@ -908,6 +959,7 @@ void Application::HandleStateChangedEvent() {
              break;
          case kDeviceStateSpeaking:
              display->SetStatus(Lang::Strings::SPEAKING);
@@ -276,7 +289,7 @@ index d69d43d..b51e728 100644
  
              if (listening_mode_ != kListeningModeRealtime) {
                  audio_service_.EnableVoiceProcessing(false);
-@@ -1116,4 +1164,3 @@ void Application::ResetProtocol() {
+@@ -1116,4 +1168,3 @@ void Application::ResetProtocol() {
          protocol_.reset();
      });
  }
@@ -515,6 +528,31 @@ index 350ac58..17a761b 100644
      if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
          wake_word_ = std::make_unique<CustomWakeWord>();
      } else if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
+diff --git a/main/audio/audio_service.h b/main/audio/audio_service.h
+index 99db546..5cfb5e9 100644
+--- a/main/audio/audio_service.h
++++ b/main/audio/audio_service.h
+@@ -113,6 +113,7 @@ public:
+     void EncodeWakeWord();
+     std::unique_ptr<AudioStreamPacket> PopWakeWordPacket();
+     const std::string& GetLastWakeWord() const;
++    std::string GetLastWakeWordDetail() const { return wake_word_ ? wake_word_->GetLastDetectionDetail() : ""; }
+     bool IsVoiceDetected() const { return voice_detected_; }
+     bool IsIdle();
+     void WaitForPlaybackQueueEmpty();
+diff --git a/main/audio/wake_word.h b/main/audio/wake_word.h
+index 9b8986a..ac7f78a 100644
+--- a/main/audio/wake_word.h
++++ b/main/audio/wake_word.h
+@@ -21,6 +21,8 @@ public:
+     virtual void EncodeWakeWordData() = 0;
+     virtual bool GetWakeWordOpus(std::vector<uint8_t>& opus) = 0;
+     virtual const std::string& GetLastDetectedWakeWord() const = 0;
++    // Hermes: extra JSON fields for the wake word detect message (e.g. the detection score); "" = none
++    virtual std::string GetLastDetectionDetail() const { return ""; }
+ };
+ 
+ #endif
 diff --git a/main/boards/common/i2c_device.cc b/main/boards/common/i2c_device.cc
 index 835997d..ea50d51 100644
 --- a/main/boards/common/i2c_device.cc
@@ -633,3 +671,33 @@ index 1e5d687..dbcc91d 100644
      bool has_serial_number_ = false;
      bool has_activation_challenge_ = false;
      std::string current_version_;
+diff --git a/main/protocols/protocol.cc b/main/protocols/protocol.cc
+index 470cc91..c6ff945 100644
+--- a/main/protocols/protocol.cc
++++ b/main/protocols/protocol.cc
+@@ -48,9 +48,10 @@ void Protocol::SendAbortSpeaking(AbortReason reason) {
+     SendText(message);
+ }
+ 
+-void Protocol::SendWakeWordDetected(const std::string& wake_word) {
++void Protocol::SendWakeWordDetected(const std::string& wake_word, const std::string& detail) {
+     std::string json = "{\"session_id\":\"" + session_id_ + 
+-                      "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + wake_word + "\"}";
++                      "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + wake_word + "\"" +
++                      (detail.empty() ? "" : "," + detail) + "}";
+     SendText(json);
+ }
+ 
+diff --git a/main/protocols/protocol.h b/main/protocols/protocol.h
+index 28ef604..b2beaa2 100644
+--- a/main/protocols/protocol.h
++++ b/main/protocols/protocol.h
+@@ -68,7 +68,7 @@ public:
+     virtual void CloseAudioChannel(bool send_goodbye = true) = 0;
+     virtual bool IsAudioChannelOpened() const = 0;
+     virtual bool SendAudio(std::unique_ptr<AudioStreamPacket> packet) = 0;
+-    virtual void SendWakeWordDetected(const std::string& wake_word);
++    virtual void SendWakeWordDetected(const std::string& wake_word, const std::string& detail = "");
+     virtual void SendStartListening(ListeningMode mode);
+     virtual void SendStopListening();
+     virtual void SendAbortSpeaking(AbortReason reason);

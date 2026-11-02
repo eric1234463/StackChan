@@ -8,6 +8,8 @@
 #include <wake_word.h>
 
 #include <array>
+#include <condition_variable>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -15,6 +17,8 @@
 #include <vector>
 
 #include <frontend.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 namespace tflite {
 class MicroInterpreter;
@@ -32,9 +36,12 @@ public:
     void Start() override;
     void Stop() override;
     size_t GetFeedSize() override { return 160; }  // 10 ms at 16 kHz
-    void EncodeWakeWordData() override {}
-    bool GetWakeWordOpus(std::vector<uint8_t>& opus) override { return false; }
+    // Debug upload (CONFIG_SEND_WAKE_WORD_DATA): the audio leading up to the detection, as Opus packets.
+    void EncodeWakeWordData() override;
+    bool GetWakeWordOpus(std::vector<uint8_t>& opus) override;
     const std::string& GetLastDetectedWakeWord() const override { return wake_word_; }
+    // JSON fields describing the last detection, e.g. "score":0.43,"window":[0.2,...]
+    std::string GetLastDetectionDetail() const override { return detail_; }
 
 private:
     static constexpr int kSlidingWindow = 5;  // from wei_eric.json
@@ -60,6 +67,20 @@ private:
     std::array<uint8_t, kSlidingWindow> recent_{};
     int recent_index_      = 0;
     int ignore_inferences_ = 0;
+
+    // Last kHistorySamples of mono mic input (PSRAM ring), encoded and sent after a detection.
+    static constexpr size_t kHistorySamples = 16000 * 2;  // 2 s at 16 kHz
+    int16_t* history_       = nullptr;
+    size_t history_pos_     = 0;
+    size_t history_filled_  = 0;
+    std::vector<int16_t> encode_pcm_;
+    std::deque<std::vector<uint8_t>> opus_;  // empty packet = end of the encoded clip
+    std::mutex opus_mutex_;
+    std::condition_variable opus_cv_;
+    bool encoding_ = false;  // the encode task (and its static stack) is in use
+    StackType_t* encode_stack_  = nullptr;
+    StaticTask_t* encode_tcb_   = nullptr;
+    std::string detail_;
 
     const std::string wake_word_ = "喂Eric";
 };
