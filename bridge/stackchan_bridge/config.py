@@ -48,6 +48,7 @@ class Config:
     ack_text: str = "收到，幫緊你。"  # spoken while Hermes works; empty disables
     device_volume: int | None = None  # 0-100, set on the device at every connect; None leaves its own setting
     debug_audio_dir: str = ""  # if set, each utterance is saved as WAV there (local debugging only)
+    wake_audio_dir: str = ""  # if set, the device's audio leading up to each wake word is saved as WAV there
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -97,6 +98,7 @@ def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Con
         listen_timeout_ms=int(env.get("LISTEN_TIMEOUT_MS", defaults.listen_timeout_ms)),
         followup_timeout_ms=int(env.get("FOLLOWUP_TIMEOUT_MS", defaults.followup_timeout_ms)),
         debug_audio_dir=env.get("BRIDGE_DEBUG_AUDIO_DIR", ""),
+        wake_audio_dir=env.get("BRIDGE_WAKE_AUDIO_DIR", ""),
         ack_text=env.get("ACK_TEXT", defaults.ack_text),
         device_volume=int(env["DEVICE_VOLUME"]) if env.get("DEVICE_VOLUME") else None,
     )

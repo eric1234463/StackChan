@@ -374,3 +374,58 @@ async def test_short_noise_burst_is_discarded_before_stt(bridge):
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(ws.recv(), 1)
     assert fakes.stt_bytes == 0 and fakes.asked == []
+
+
+async def wake_clip_bridge(port: int, wake_dir, fakes: Fakes):
+    cfg = Config(device_token=TOKEN, hermes_api_key="unused", host="127.0.0.1", port=port,
+                 listen_timeout_ms=3000, wake_audio_dir=str(wake_dir))
+    ready = asyncio.Event()
+    task = asyncio.create_task(serve_forever(cfg, fakes.backends(), ready))
+    await ready.wait()
+    return task
+
+
+async def test_wake_audio_before_detect_is_saved_with_score(
+        unused_tcp_port, tmp_path, caplog, monkeypatch):
+    caplog.set_level("INFO", logger="stackchan_bridge")
+    monkeypatch.setattr(server, "WAKE_GAP_S", 0.2)
+    fakes = Fakes()
+    task = await wake_clip_bridge(unused_tcp_port, tmp_path, fakes)
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{unused_tcp_port}/xiaozhi/v1/",
+                                      additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+            await handshake(ws)
+            for frame in opus_frames(0.3, 3):  # stale frames from an earlier listen, then a gap
+                await ws.send(frame)
+            await asyncio.sleep(0.4)
+            for frame in opus_frames(0.3, 20):  # the device's wake clip: 1.2 s
+                await ws.send(frame)
+            await ws.send(json.dumps({"type": "listen", "state": "detect", "text": "喂Eric",
+                                      "score": 0.43, "window": [0.2, 0.3, 0.5, 0.6, 0.55]}))
+            await talk(ws)
+            await collect_turn(ws)
+    finally:
+        task.cancel()
+
+    clips = list(tmp_path.glob("wake-*.wav"))
+    assert len(clips) == 1 and clips[0].name.endswith("-s0.43.wav")
+    import wave
+    with wave.open(str(clips[0])) as w:
+        assert w.getframerate() == IN_RATE and w.getnframes() == 20 * FRAME  # stale frames dropped
+    assert "wake word 喂Eric score 0.43 window [0.2, 0.3, 0.5, 0.6, 0.55], 1200 ms audio" in caplog.text
+    assert fakes.asked == ["開客廳燈"]  # the turn after the wake word runs as before
+
+
+async def test_detect_without_score_or_clip_still_starts_a_turn(unused_tcp_port, tmp_path):
+    fakes = Fakes()
+    task = await wake_clip_bridge(unused_tcp_port, tmp_path, fakes)
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{unused_tcp_port}/xiaozhi/v1/",
+                                      additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+            await handshake(ws)
+            await ws.send(json.dumps({"type": "listen", "state": "detect", "text": "喂Eric"}))
+            await talk(ws)
+            await collect_turn(ws)
+    finally:
+        task.cancel()
+    assert fakes.asked == ["開客廳燈"] and not list(tmp_path.glob("wake-*.wav"))

@@ -39,6 +39,9 @@ ANNOUNCE_PATH = "/announce"
 KEEPALIVE_S = 60
 # The device accepts audio only once in Speaking, and wakes from Wi-Fi modem sleep every DTIM period.
 ANNOUNCE_LEAD_S = 0.3
+# The device sends its wake clip (~2 s of Opus) in one burst right before `listen detect`; a longer gap between
+# packets outside a listen means the earlier ones were leftovers of a previous listen, not part of the clip.
+WAKE_GAP_S = 1.0
 
 
 @dataclass
@@ -126,6 +129,8 @@ class Session:
         self.followup = False  # the current listen is such a follow-up
         self.timeout_ms = cfg.listen_timeout_ms
         self.turn: asyncio.Task | None = None
+        self.wake_packets: list[bytes] = []  # audio received outside a listen: the next wake clip
+        self.wake_last = 0.0
         self._reset_capture()
 
     def _reset_capture(self) -> None:
@@ -193,7 +198,7 @@ class Session:
             elif state == "stop" and self.capturing:
                 await self.end_utterance("device stop")
             elif state == "detect":
-                log.info("wake word: %s", msg.get("text", ""))
+                self.on_wake(msg)
         elif kind == "abort":
             if self.turn and not self.turn.done():
                 self.turn.cancel()
@@ -203,8 +208,26 @@ class Session:
         else:
             log.debug("ignored message type %r", kind)
 
+    def on_wake(self, msg: dict) -> None:
+        """Log the detection score and keep the device's wake clip, to tell false triggers apart."""
+        packets, self.wake_packets = self.wake_packets, []
+        decoder = OpusDecoder()  # the clip is its own stream, not a continuation of the last listen
+        pcm = b"".join(decoder.decode(p) for p in packets)
+        score = msg.get("score")
+        log.info("wake word %s score %s window %s, %d ms audio", msg.get("text", ""),
+                 "n/a" if score is None else f"{score:.2f}", msg.get("window", []), len(packets) * FRAME_MS)
+        if self.cfg.wake_audio_dir and pcm:
+            suffix = "" if score is None else f"-s{score:.2f}"
+            save_wav(self.cfg.wake_audio_dir, pcm, f"wake-%Y%m%dT%H%M%SZ{suffix}.wav")
+
     async def on_audio(self, packet: bytes) -> None:
         if not self.capturing:
+            now = time.monotonic()
+            if now - self.wake_last > WAKE_GAP_S:
+                self.wake_packets = []
+            self.wake_last = now
+            self.wake_packets.append(packet)
+            del self.wake_packets[:-(5000 // FRAME_MS)]  # bound it: the clip is 2 s
             return
         pcm = self.decoder.decode(packet)
         self.captured_ms += FRAME_MS
@@ -343,10 +366,10 @@ async def _once(item):
     yield item
 
 
-def save_wav(directory: str, pcm: bytes) -> None:
+def save_wav(directory: str, pcm: bytes, pattern: str = "utt-%Y%m%dT%H%M%SZ.wav") -> None:
     path = Path(directory)
     path.mkdir(parents=True, exist_ok=True)
-    name = path / time.strftime("utt-%Y%m%dT%H%M%SZ.wav", time.gmtime())
+    name = path / time.strftime(pattern, time.gmtime())
     with wave.open(str(name), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
