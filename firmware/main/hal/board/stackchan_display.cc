@@ -337,6 +337,9 @@ void StackChanAvatarDisplay::SetEmotion(const char* emotion)
         hermes_head::Nod();
         return;
     }
+    if (strcmp(emotion, "working") == 0) {  // Hermes bridge: ack done, reply not ready; shake until it is
+        hermes_head::StartShake();
+    }
 
     // ESP_LOGE(TAG, "SetEmotion: %s", emotion);
 
@@ -412,6 +415,9 @@ void StackChanAvatarDisplay::SetChatMessage(const char* role, const char* conten
         hermes_screen::OnAssistantSentence();
     }
 #endif
+    if (role != nullptr && strcmp(role, "assistant") == 0) {
+        hermes_head::StopShake();  // the reply has started
+    }
 
     if (strcmp(role, "system") == 0) {
         stackchan.avatar().setSpeech(content);
@@ -520,6 +526,9 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
     hermes_screen::Init();
     hermes_screen::OnDeviceState(Application::GetInstance().GetDeviceState());
 #endif
+    if (strcmp(status, Lang::Strings::SPEAKING) != 0) {
+        hermes_head::StopShake();  // the turn ended without a reply sentence (error, abort)
+    }
 
     bool is_idle      = false;
     bool is_listening = false;
