@@ -4,7 +4,6 @@
 #include <esp_attr.h>
 #include <esp_log.h>
 #include <esp_system.h>
-#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 
 #include <cstdarg>
@@ -133,7 +132,7 @@ std::string TakeUploadJson()
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "device_log");
     cJSON_AddStringToObject(root, "reset_reason", g_reset_reason);
-    cJSON_AddNumberToObject(root, "uptime_ms", (double)(esp_timer_get_time() / 1000));
+    cJSON_AddNumberToObject(root, "uptime_ms", esp_log_timestamp());  // same clock as the "(ms)" in each line
     cJSON_AddNumberToObject(root, "dropped", dropped);
     cJSON_AddStringToObject(root, "text", text.c_str());
     char* json = cJSON_PrintUnformatted(root);
