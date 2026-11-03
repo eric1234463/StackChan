@@ -52,6 +52,7 @@ class Config:
     device_volume: int | None = None  # 0-100, set on the device at every connect; None leaves its own setting
     debug_audio_dir: str = ""  # if set, each utterance is saved as WAV there (local debugging only)
     wake_audio_dir: str = ""  # if set, the device's audio leading up to each wake word is saved as WAV there
+    device_log_file: str = ""  # if set, the device's own log (uploaded at every connect) is appended there
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -103,6 +104,7 @@ def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Con
         followup_min_rms=float(env.get("FOLLOWUP_MIN_RMS", defaults.followup_min_rms)),
         debug_audio_dir=env.get("BRIDGE_DEBUG_AUDIO_DIR", ""),
         wake_audio_dir=env.get("BRIDGE_WAKE_AUDIO_DIR", ""),
+        device_log_file=env.get("BRIDGE_DEVICE_LOG_FILE", ""),
         ack_text=env.get("ACK_TEXT", defaults.ack_text),
         device_volume=int(env["DEVICE_VOLUME"]) if env.get("DEVICE_VOLUME") else None,
     )

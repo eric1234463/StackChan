@@ -456,3 +456,30 @@ async def test_detect_without_score_or_clip_still_starts_a_turn(unused_tcp_port,
     finally:
         task.cancel()
     assert fakes.asked == ["開客廳燈"] and not list(tmp_path.glob("wake-*.wav"))
+
+
+async def test_device_log_upload_is_written_with_wall_clock_times(unused_tcp_port, tmp_path, caplog):
+    caplog.set_level("INFO", logger="stackchan_bridge")
+    log_file = tmp_path / "device.log"
+    cfg = Config(device_token=TOKEN, hermes_api_key="unused", host="127.0.0.1", port=unused_tcp_port,
+                 device_log_file=str(log_file))
+    ready = asyncio.Event()
+    task = asyncio.create_task(serve_forever(cfg, Fakes().backends(), ready))
+    await ready.wait()
+    text = ("W (5000) WifiStation: WiFi disconnected, reason: 8\n"  # before the reset: no wall time
+            "I (120) HermesLog: boot, reset reason task_wdt\n"
+            "I (9000) Application: Background connect ok\n")
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{unused_tcp_port}/xiaozhi/v1/",
+                                      additional_headers={"Authorization": f"Bearer {TOKEN}"}) as ws:
+            await handshake(ws)
+            await ws.send(json.dumps({"type": "device_log", "reset_reason": "task_wdt", "uptime_ms": 10000,
+                                      "dropped": 0, "text": text}))
+            await asyncio.sleep(0.2)
+    finally:
+        task.cancel()
+    lines = log_file.read_text(encoding="utf-8").splitlines()
+    assert "reset reason task_wdt" in lines[0] and "3 lines" in lines[0]
+    assert lines[1].startswith("prev-boot ") and lines[1].endswith("WiFi disconnected, reason: 8")
+    assert lines[2][:4].isdigit() and lines[2].endswith("HermesLog: boot, reset reason task_wdt")  # UTC stamped
+    assert "device log: 3 lines, reset reason task_wdt" in caplog.text

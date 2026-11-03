@@ -6,6 +6,7 @@ import contextlib
 import hmac
 import json
 import logging
+import re
 import time
 import uuid
 import wave
@@ -203,10 +204,20 @@ class Session:
             if self.turn and not self.turn.done():
                 self.turn.cancel()
             await self.send_json(type="tts", state="stop")
+        elif kind == "device_log":
+            self.on_device_log(msg)
         elif kind == "mcp":
             log.info("device mcp: %s", json.dumps(msg.get("payload"), ensure_ascii=False)[:300])
         else:
             log.debug("ignored message type %r", kind)
+
+    def on_device_log(self, msg: dict) -> None:
+        """The device's log since its last connect (it keeps it across software resets), for offline/reboot gaps."""
+        lines = [line for line in msg.get("text", "").splitlines() if line.strip()]
+        reason = msg.get("reset_reason", "?")
+        log.info("device log: %d lines, reset reason %s, %d bytes dropped", len(lines), reason, msg.get("dropped", 0))
+        if self.cfg.device_log_file and lines:
+            write_device_log(self.cfg.device_log_file, lines, reason, msg.get("uptime_ms", 0), msg.get("dropped", 0))
 
     def on_wake(self, msg: dict) -> None:
         """Log the detection score and keep the device's wake clip, to tell false triggers apart."""
@@ -381,6 +392,30 @@ def save_wav(directory: str, pcm: bytes, pattern: str = "utt-%Y%m%dT%H%M%SZ.wav"
         w.setsampwidth(2)
         w.setframerate(IN_RATE)
         w.writeframes(pcm)
+
+
+DEVICE_LOG_MS = re.compile(r"^[EWIDV] \((\d+)\) ")
+BOOT_MARK = "HermesLog: boot"
+
+
+def write_device_log(path: str, lines: list[str], reason: str, uptime_ms: int, dropped: int) -> None:
+    """Append the lines, each stamped with UTC from its uptime ms; lines before this boot's marker came from the
+    previous boot (uptime restarted), so they are tagged prev-boot instead of given a wrong time."""
+    now = time.time()
+    boot = max((i for i, line in enumerate(lines) if BOOT_MARK in line), default=0)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))} --- upload: {len(lines)} lines, "
+                f"reset reason {reason}, uptime {uptime_ms} ms, {dropped} bytes dropped\n")
+        for i, line in enumerate(lines):
+            m = DEVICE_LOG_MS.match(line)
+            if i < boot:
+                stamp = "prev-boot"
+            elif m:
+                t = now - (uptime_ms - int(m.group(1))) / 1000
+                stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int(t * 1000) % 1000:03d}Z"
+            else:
+                stamp = " " * 24
+            f.write(f"{stamp} {line}\n")
 
 
 def make_auth_check(cfg: Config, sessions: set[Session]):
