@@ -1,9 +1,12 @@
 diff --git a/main/application.cc b/main/application.cc
-index d69d43d..e39e533 100644
+index d69d43d..a8943ed 100644
 --- a/main/application.cc
 +++ b/main/application.cc
-@@ -1,14 +1,15 @@
+@@ -1,14 +1,18 @@
  #include "application.h"
++#if CONFIG_HERMES_BAKED_CONFIG
++#include "hal/hermes/device_log.h"
++#endif
 +#include <hal/hal.h>
 +#include "assets.h"
 +#include "assets/lang_config.h"
@@ -24,7 +27,7 @@ index d69d43d..e39e533 100644
  
  #include <cstring>
  #include <esp_log.h>
-@@ -217,7 +218,8 @@ void Application::Run() {
+@@ -217,7 +221,8 @@ void Application::Run() {
              HandleStopListeningEvent();
          }
  
@@ -34,7 +37,7 @@ index d69d43d..e39e533 100644
              while (auto packet = audio_service_.PopPacketFromSendQueue()) {
                  if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
                      break;
-@@ -247,6 +249,7 @@ void Application::Run() {
+@@ -247,6 +252,7 @@ void Application::Run() {
  
          if (bits & MAIN_EVENT_CLOCK_TICK) {
              clock_ticks_++;
@@ -42,7 +45,7 @@ index d69d43d..e39e533 100644
              auto display = Board::GetInstance().GetDisplay();
              display->UpdateStatusBar();
          
-@@ -327,8 +330,13 @@ void Application::ActivationTask() {
+@@ -327,8 +333,13 @@ void Application::ActivationTask() {
      // Check for new assets version
      CheckAssetsVersion();
  
@@ -56,7 +59,7 @@ index d69d43d..e39e533 100644
  
      // Initialize the protocol
      InitializeProtocol();
-@@ -399,6 +407,7 @@ void Application::CheckNewVersion() {
+@@ -399,6 +410,7 @@ void Application::CheckNewVersion() {
      const int MAX_RETRY = 10;
      int retry_count = 0;
      int retry_delay = 10; // Initial retry delay in seconds
@@ -64,7 +67,7 @@ index d69d43d..e39e533 100644
  
      auto& board = Board::GetInstance();
      while (true) {
-@@ -441,15 +450,18 @@ void Application::CheckNewVersion() {
+@@ -441,15 +453,18 @@ void Application::CheckNewVersion() {
  
          // No new version, mark the current version as valid
          ota_->MarkCurrentVersionValid();
@@ -87,7 +90,7 @@ index d69d43d..e39e533 100644
          }
  
          // This will block the loop until the activation is done or timeout
-@@ -477,6 +489,9 @@ void Application::InitializeProtocol() {
+@@ -477,6 +492,9 @@ void Application::InitializeProtocol() {
  
      display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
  
@@ -97,7 +100,7 @@ index d69d43d..e39e533 100644
      if (ota_->HasMqttConfig()) {
          protocol_ = std::make_unique<MqttProtocol>();
      } else if (ota_->HasWebsocketConfig()) {
-@@ -485,12 +500,17 @@ void Application::InitializeProtocol() {
+@@ -485,12 +503,17 @@ void Application::InitializeProtocol() {
          ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
          protocol_ = std::make_unique<MqttProtocol>();
      }
@@ -115,7 +118,23 @@ index d69d43d..e39e533 100644
          last_error_message_ = message;
          xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
      });
-@@ -571,7 +591,17 @@ void Application::InitializeProtocol() {
+@@ -503,6 +526,15 @@ void Application::InitializeProtocol() {
+     
+     protocol_->OnAudioChannelOpened([this, codec, &board]() {
+         board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
++#if CONFIG_HERMES_BAKED_CONFIG
++        // Hermes: upload the log written since the last connect (offline time, or before a software reset).
++        Schedule([this]() {
++            std::string json = hermes_log::TakeUploadJson();
++            if (!json.empty() && protocol_ && protocol_->IsAudioChannelOpened()) {
++                protocol_->SendJson(json);
++            }
++        });
++#endif
+         if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
+             ESP_LOGW(TAG, "Server sample rate %d does not match device output sample rate %d, resampling may cause distortion",
+                 protocol_->server_sample_rate(), codec->output_sample_rate());
+@@ -571,7 +603,17 @@ void Application::InitializeProtocol() {
              auto command = cJSON_GetObjectItem(root, "command");
              if (cJSON_IsString(command)) {
                  ESP_LOGI(TAG, "System command: %s", command->valuestring);
@@ -134,7 +153,7 @@ index d69d43d..e39e533 100644
                      // Do a reboot if user requests a OTA update
                      Schedule([this]() {
                          Reboot();
-@@ -609,36 +639,6 @@ void Application::InitializeProtocol() {
+@@ -609,36 +651,6 @@ void Application::InitializeProtocol() {
      protocol_->Start();
  }
  
@@ -171,7 +190,7 @@ index d69d43d..e39e533 100644
  void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
      ESP_LOGW(TAG, "Alert [%s] %s: %s", emotion, status, message);
      auto display = Board::GetInstance().GetDisplay();
-@@ -716,8 +716,13 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
+@@ -716,8 +728,13 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
          return;
      }
  
@@ -185,7 +204,7 @@ index d69d43d..e39e533 100644
              return;
          }
      }
-@@ -786,8 +791,14 @@ void Application::HandleWakeWordDetectedEvent() {
+@@ -786,8 +803,14 @@ void Application::HandleWakeWordDetectedEvent() {
          audio_service_.EncodeWakeWord();
          auto wake_word = audio_service_.GetLastWakeWord();
  
@@ -201,7 +220,7 @@ index d69d43d..e39e533 100644
              // Schedule to let the state change be processed first (UI update),
              // then continue with OpenAudioChannel which may block for ~1 second
              Schedule([this, wake_word]() {
-@@ -819,14 +830,47 @@ void Application::HandleWakeWordDetectedEvent() {
+@@ -819,14 +842,47 @@ void Application::HandleWakeWordDetectedEvent() {
      }
  }
  
@@ -249,7 +268,7 @@ index d69d43d..e39e533 100644
              audio_service_.EnableWakeWordDetection(true);
              return;
          }
-@@ -839,7 +883,7 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+@@ -839,7 +895,7 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
          protocol_->SendAudio(std::move(packet));
      }
      // Set the chat state to wake word detected
@@ -258,7 +277,7 @@ index d69d43d..e39e533 100644
  
      // Set flag to play popup sound after state changes to listening
      play_popup_on_listening_ = true;
-@@ -869,6 +913,7 @@ void Application::HandleStateChangedEvent() {
+@@ -869,6 +925,7 @@ void Application::HandleStateChangedEvent() {
              display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
              audio_service_.EnableVoiceProcessing(false);
              audio_service_.EnableWakeWordDetection(true);
@@ -266,7 +285,7 @@ index d69d43d..e39e533 100644
              break;
          case kDeviceStateConnecting:
              display->SetStatus(Lang::Strings::CONNECTING);
-@@ -889,7 +934,13 @@ void Application::HandleStateChangedEvent() {
+@@ -889,7 +946,13 @@ void Application::HandleStateChangedEvent() {
                  
                  // Send the start listening command
                  protocol_->SendStartListening(listening_mode_);
@@ -281,7 +300,7 @@ index d69d43d..e39e533 100644
              }
  
  #ifdef CONFIG_WAKE_WORD_DETECTION_IN_LISTENING
-@@ -908,6 +959,7 @@ void Application::HandleStateChangedEvent() {
+@@ -908,6 +971,7 @@ void Application::HandleStateChangedEvent() {
              break;
          case kDeviceStateSpeaking:
              display->SetStatus(Lang::Strings::SPEAKING);
@@ -289,7 +308,7 @@ index d69d43d..e39e533 100644
  
              if (listening_mode_ != kListeningModeRealtime) {
                  audio_service_.EnableVoiceProcessing(false);
-@@ -1116,4 +1168,3 @@ void Application::ResetProtocol() {
+@@ -1116,4 +1180,3 @@ void Application::ResetProtocol() {
          protocol_.reset();
      });
  }
@@ -689,10 +708,10 @@ index 470cc91..c6ff945 100644
  }
  
 diff --git a/main/protocols/protocol.h b/main/protocols/protocol.h
-index 28ef604..b2beaa2 100644
+index 28ef604..da8a95a 100644
 --- a/main/protocols/protocol.h
 +++ b/main/protocols/protocol.h
-@@ -68,7 +68,7 @@ public:
+@@ -68,11 +68,12 @@ public:
      virtual void CloseAudioChannel(bool send_goodbye = true) = 0;
      virtual bool IsAudioChannelOpened() const = 0;
      virtual bool SendAudio(std::unique_ptr<AudioStreamPacket> packet) = 0;
@@ -701,3 +720,8 @@ index 28ef604..b2beaa2 100644
      virtual void SendStartListening(ListeningMode mode);
      virtual void SendStopListening();
      virtual void SendAbortSpeaking(AbortReason reason);
+     virtual void SendMcpMessage(const std::string& message);
++    bool SendJson(const std::string& json) { return SendText(json); }  // Hermes: device_log upload
+ 
+ protected:
+     std::function<void(const cJSON* root)> on_incoming_json_;

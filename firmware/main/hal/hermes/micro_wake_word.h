@@ -67,6 +67,7 @@ private:
     std::array<uint8_t, kSlidingWindow> recent_{};
     int recent_index_      = 0;
     int ignore_inferences_ = 0;
+    float near_miss_peak_  = 0.0f;  // highest window mean of the current sub-cutoff episode (diagnostics)
 
     // Last kHistorySamples of mono mic input (PSRAM ring), encoded and sent after a detection.
     static constexpr size_t kHistorySamples = 16000 * 2;  // 2 s at 16 kHz

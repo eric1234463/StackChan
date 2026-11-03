@@ -35,6 +35,7 @@ constexpr size_t kVarArenaSize     = 1024;
 constexpr int kFeatureCount        = 40;
 constexpr int kSampleRate          = 16000;
 constexpr int kRefractoryInferences = 33;  // ~1 s at 30 ms per inference (stride 3)
+constexpr float kNearMissFloor     = 0.20f;  // window means above this but below the cutoff are logged as near misses
 
 using OpResolver = tflite::MicroMutableOpResolver<20>;
 
@@ -168,6 +169,7 @@ void MicroWakeWord::ResetDetector()
     features_filled_ = 0;
     recent_.fill(0);
     recent_index_      = 0;
+    near_miss_peak_    = 0.0f;
     history_filled_    = 0;  // the clip covers only audio since this reset
     ignore_inferences_ = kSlidingWindow;  // let the streaming state settle after a reset
 }
@@ -257,12 +259,21 @@ bool MicroWakeWord::InferAndCheck()
     for (uint8_t p : recent_) {
         sum += p;
     }
-    if (sum < kProbabilityCutoff * 255.0f * kSlidingWindow) {
+    const float mean = sum / (255.0f * kSlidingWindow);
+    if (mean < kProbabilityCutoff) {
+        // Diagnostics for "it did not wake": an episode that rose above the floor but never reached the cutoff.
+        if (mean >= kNearMissFloor) {
+            near_miss_peak_ = std::max(near_miss_peak_, mean);
+        } else if (near_miss_peak_ > 0.0f) {
+            ESP_LOGI(TAG, "Near miss: peak window mean %.2f (cutoff %.2f)", near_miss_peak_, kProbabilityCutoff);
+            near_miss_peak_ = 0.0f;
+        }
         return false;
     }
+    near_miss_peak_ = 0.0f;
     // Oldest first; logged and sent to the bridge so false triggers can be told apart by score.
     char detail[96];
-    int n = snprintf(detail, sizeof(detail), "\"score\":%.2f,\"window\":[", sum / (255.0f * kSlidingWindow));
+    int n = snprintf(detail, sizeof(detail), "\"score\":%.2f,\"window\":[", mean);
     for (int i = 0; i < kSlidingWindow; ++i) {
         n += snprintf(detail + n, sizeof(detail) - n, "%s%.2f", i ? "," : "",
                       recent_[(recent_index_ + i) % kSlidingWindow] / 255.0f);

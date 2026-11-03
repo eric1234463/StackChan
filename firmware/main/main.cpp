@@ -3,6 +3,7 @@
  *
  * SPDX-License-Identifier: MIT
  */
+#include "hal/hermes/device_log.h"
 #include <smooth_ui_toolkit.hpp>
 #include <uitk/short_namespace.hpp>
 #include <mooncake_log.h>
@@ -15,6 +16,8 @@ using namespace smooth_ui_toolkit;
 
 extern "C" void app_main(void)
 {
+    hermes_log::Init();  // first, so the ring has every line of this boot
+
     // Setup logger
     mclog::set_level(mclog::level_info);
     mclog::set_time_format(mclog::time_format_unix_milliseconds);
