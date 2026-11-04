@@ -25,7 +25,7 @@ Python projects use `uv` (each has its own `pyproject.toml` / `uv.lock`; `python
 | Dir | Purpose | Test |
 |---|---|---|
 | `bridge/` | xiaozhi WS server (`stackchan_bridge`), the core of the system | `cd bridge && uv run pytest` |
-| `speech/` | Wyoming STT (`mlx-whisper` Cantonese 4-bit) and TTS (Qwen3-TTS HK Cantonese, MLX 8-bit) servers; Apple Silicon only | `cd speech && uv run pytest` |
+| `speech/` | Wyoming STT (Qwen3-ASR Liujgoj romanization, MLX 8-bit; `mlx-whisper` as fallback) and TTS (Qwen3-TTS HK Cantonese, MLX 8-bit) servers; Apple Silicon only | `cd speech && uv run pytest` |
 | `voice/` | Speaker dataset recorder (`record.py`) + speaker-LoRA training (`train/train.sh`, MPS) for the `eric` TTS voice | `cd voice && uv run pytest` |
 | `firmware/` | ESP-IDF v5.5.4 firmware for M5Stack CoreS3 | host tests below |
 
@@ -36,7 +36,7 @@ Services run as launchd agents; install scripts render the plist templates in `*
 - `bridge/install.sh` — needs `bridge/.env` (copy `.env.example`; `BRIDGE_DEVICE_TOKEN`, `HERMES_API_KEY` required).
   Label `space.hermes.stackchan-bridge`, log `~/Library/Logs/stackchan-bridge.log`. Run locally: `uv run python -m stackchan_bridge`.
 - `speech/install.sh` — `TTS_MODEL_DIR=... [TTS_VOICE=eric] [TTS_SPEED=...] [STT_MODEL=...] ./install.sh`.
-  Labels `space.hermes.whisper-yue` / `space.hermes.canto-tts`, logs `~/Library/Logs/stackchan-{stt,tts}.log`.
+  `STT_ENGINE=qwen3-asr|whisper`. Labels `space.hermes.whisper-yue` (either engine) / `space.hermes.canto-tts`, logs `~/Library/Logs/stackchan-{stt,tts}.log`.
   These Wyoming servers are also used by Home Assistant: keep their ports and protocol compatible.
 - `bridge/announce.sh "TEXT"` — make the connected robot speak unprompted (`GET /announce` with the device token).
 

@@ -1,4 +1,4 @@
-"""Wyoming ASR server wrapping mlx-whisper (Cantonese fine-tune, Apple Silicon)."""
+"""Wyoming ASR server: Qwen3-ASR Liujgoj (mlx-audio) or mlx-whisper Cantonese fine-tunes (Apple Silicon)."""
 from __future__ import annotations
 
 import argparse
@@ -8,6 +8,7 @@ import functools
 import logging
 import re
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -20,6 +21,8 @@ from wyoming.server import AsyncEventHandler, AsyncServer
 _LOGGER = logging.getLogger(__name__)
 RATE = 16000
 DEFAULT_MODEL = "WinsonLi/whisper-large-v3-cantonese-mlx-4bit"
+# Built from Yvthyvq/Liujgoj-Cantonese-Qwen3-ASR-1.7B-V1 with mlx_audio.convert -q --q-bits 8 (see README).
+DEFAULT_QWEN_MODEL = str(Path.home() / "models" / "liujgoj-qwen3-asr-1.7b-mlx-8bit")
 DEFAULT_PROMPT = (  # areas and devices as named in Home Assistant (listed via Hermes 2026-11-02)
     "香港廣東話口語。幫我開燈、熄燈、閂窗簾：客廳、書房、主人房、廚房、廁所、走廊；"
     "燈槽、顯示器掛燈、風扇、循環扇、空氣清新機、加濕器、驅蚊器、冷氣、電視、門鎖、掃地機有冇着？"
@@ -148,12 +151,13 @@ class SttHandler(AsyncEventHandler):
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--uri", default="tcp://0.0.0.0:10300")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="HF repo id or local MLX model dir")
+    parser.add_argument("--model", help="HF repo id or local MLX model dir (default depends on --engine)")
     parser.add_argument("--language", default="yue")
     parser.add_argument("--initial-prompt", default=DEFAULT_PROMPT)
-    parser.add_argument("--engine", choices=ENGINES, default="whisper",
-                        help="qwen3-asr: local MLX dir of the Liujgoj Qwen3-ASR fine-tune (outputs romanization)")
+    parser.add_argument("--engine", choices=ENGINES, default="qwen3-asr",
+                        help="qwen3-asr writes Liujgoj romanization, whisper writes Chinese characters")
     args = parser.parse_args()
+    args.model = args.model or (DEFAULT_QWEN_MODEL if args.engine == "qwen3-asr" else DEFAULT_MODEL)
     logging.basicConfig(level=logging.INFO)
 
     _LOGGER.info("Loading %s (%s)", args.model, args.engine)

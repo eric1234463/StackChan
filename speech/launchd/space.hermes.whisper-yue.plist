@@ -12,6 +12,8 @@
     <string>tcp://0.0.0.0:10300</string>
     <string>--model</string>
     <string>__STT_MODEL__</string>
+    <string>--engine</string>
+    <string>__STT_ENGINE__</string>
   </array>
   <key>WorkingDirectory</key><string>__SPEECH_DIR__</string>
   <key>RunAtLoad</key><true/>

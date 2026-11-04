@@ -141,7 +141,7 @@ def test_romanized_stt_transcripts():
 
 def test_config_romanized_stt_tells_hermes():
     env = {"BRIDGE_DEVICE_TOKEN": "t", "HERMES_API_KEY": "k"}
-    plain = config.load(env=env)
-    assert not plain.stt_romanized and plain.instructions == config.DEFAULT_INSTRUCTIONS
-    cfg = config.load(env={**env, "STT_ROMANIZED": "1"})
+    cfg = config.load(env=env)
     assert cfg.stt_romanized and cfg.instructions == config.DEFAULT_INSTRUCTIONS + config.ROMANIZED_NOTE
+    whisper = config.load(env={**env, "STT_ROMANIZED": "0"})
+    assert not whisper.stt_romanized and whisper.instructions == config.DEFAULT_INSTRUCTIONS
