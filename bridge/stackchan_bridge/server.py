@@ -298,12 +298,12 @@ class Session:
             await self.ws.close()
             return
         log.info("stt %d ms: %s", ms(), transcript)
-        if not is_meaningful(transcript):
+        if not is_meaningful(transcript, self.cfg.stt_romanized):
             self.capturing = True  # device is still listening; keep capturing
             self._reset_capture()
             return
 
-        if self.followup and is_closing(transcript):
+        if self.followup and is_closing(transcript, self.cfg.stt_romanized):
             log.info("follow-up was only an acknowledgement, device to idle")
             await self.send_json(type="system", command="idle")
             return

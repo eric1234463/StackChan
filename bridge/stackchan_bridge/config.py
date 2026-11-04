@@ -14,6 +14,11 @@ DEFAULT_INSTRUCTIONS = (
     "語音轉文字有好多同音錯字（例如「幫我識客聽燈槽」即係「幫我開客廳燈」），"
     "要按上文估最可能嘅指令去做，唔好話聽唔明。"
 )
+# Appended when STT_ROMANIZED: the Liujgoj Qwen3-ASR writes romanization instead of Chinese characters.
+ROMANIZED_NOTE = (
+    "語音轉文字係粵語拼音（Liujgoj，聲調用字尾字母標，例如「Laanqhei yiqgingj gaauzor heoi yih saph ngq douh」"
+    "即係「冷氣已經較咗去二十五度」），當廣東話咁理解，回覆照用中文字。"
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +29,7 @@ class Config:
     port: int = 8765
     stt_uri: str = "tcp://127.0.0.1:10300"
     stt_language: str = "yue"
+    stt_romanized: bool = False  # the STT writes Liujgoj romanization (speech engine qwen3-asr on :10301)
     tts_uri: str = "tcp://127.0.0.1:10201"
     hermes_url: str = "http://127.0.0.1:8642"
     hermes_conversation: str = "stackchan"
@@ -80,6 +86,7 @@ def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Con
         return value
 
     defaults = Config(device_token="", hermes_api_key="")
+    romanized = env.get("STT_ROMANIZED", "").lower() in ("1", "true", "yes")
     return Config(
         device_token=need("BRIDGE_DEVICE_TOKEN"),
         hermes_api_key=need("HERMES_API_KEY"),
@@ -87,6 +94,7 @@ def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Con
         port=int(env.get("BRIDGE_PORT", defaults.port)),
         stt_uri=env.get("STT_URI", defaults.stt_uri),
         stt_language=env.get("STT_LANGUAGE", defaults.stt_language),
+        stt_romanized=romanized,
         tts_uri=env.get("TTS_URI", defaults.tts_uri),
         hermes_url=env.get("HERMES_URL", defaults.hermes_url).rstrip("/"),
         hermes_conversation=env.get("HERMES_CONVERSATION", defaults.hermes_conversation),
@@ -95,7 +103,7 @@ def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Con
         hermes_provider=env.get("HERMES_PROVIDER", ""),
         hermes_reasoning_effort=env.get("HERMES_REASONING_EFFORT", ""),
         hermes_timeout_s=float(env.get("HERMES_TIMEOUT_S", defaults.hermes_timeout_s)),
-        instructions=env.get("HERMES_INSTRUCTIONS", defaults.instructions),
+        instructions=env.get("HERMES_INSTRUCTIONS", defaults.instructions) + (ROMANIZED_NOTE if romanized else ""),
         vad_rms_threshold=float(env.get("VAD_RMS_THRESHOLD", defaults.vad_rms_threshold)),
         vad_end_silence_ms=int(env.get("VAD_END_SILENCE_MS", defaults.vad_end_silence_ms)),
         max_utterance_ms=int(env.get("MAX_UTTERANCE_MS", defaults.max_utterance_ms)),

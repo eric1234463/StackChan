@@ -122,3 +122,26 @@ def test_closing_phrases():
         assert is_closing(said), said
     for said in ("好，咁聽日呢？", "收到未？", "幫我開燈", "OK Google 開燈", "好凍呀"):
         assert not is_closing(said), said
+
+
+def test_romanized_stt_transcripts():
+    # Liujgoj outputs of the Qwen3-ASR STT on recorded and device clips (2026-11-04).
+    from stackchan_bridge.text import is_closing
+    for said in ("Bongj ngoq hoij dangj.", "Dakjzor.", "Yixgaaj keiq yatj douh.", "開燈"):
+        assert is_meaningful(said, romanized=True), said
+    for said in ("Aaj!", "Keoiq!", "Gok.", "Heij! Heij! Heij! Heij!", "嗯。", "字幕由 Amara.org 社群提供"):
+        assert not is_meaningful(said, romanized=True), said
+    assert not is_meaningful("Bongj ngoq hoij dangj.")  # Whisper mode still wants Chinese
+    for said in ("Hour.", "Sauj dour.", "Dojzeh laa.", "Mxgoij.", "Mouq yeq laa.", "Hour, mouq manhtaix.", "OK", "Byebye."):
+        assert is_closing(said, romanized=True), said
+    for said in ("Hour dungq aa.", "Bongj ngoq hoij dangj.", "Dakj mx dakj aa?", "Sauj dour meih?"):
+        assert not is_closing(said, romanized=True), said
+    assert not is_closing("Hour.")
+
+
+def test_config_romanized_stt_tells_hermes():
+    env = {"BRIDGE_DEVICE_TOKEN": "t", "HERMES_API_KEY": "k"}
+    plain = config.load(env=env)
+    assert not plain.stt_romanized and plain.instructions == config.DEFAULT_INSTRUCTIONS
+    cfg = config.load(env={**env, "STT_ROMANIZED": "1"})
+    assert cfg.stt_romanized and cfg.instructions == config.DEFAULT_INSTRUCTIONS + config.ROMANIZED_NOTE
