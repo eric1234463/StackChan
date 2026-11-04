@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import difflib
+import functools
 import logging
 import re
 import time
@@ -77,10 +78,40 @@ def _transcribe(model: str, audio: np.ndarray, language: str, prompt: str) -> st
     return "".join(kept).strip()
 
 
-def make_info(model: str, language: str) -> Info:
-    attribution = Attribution(name="WinsonLi", url=f"https://huggingface.co/{model}")
+# Liujgoj output on 248 real/recorded utterances: p50 5.7, max 15.5 tokens per audio second. mlx-audio's default
+# max_tokens is 8192: on a 15 s noise clip the model repeated "Heij!" for 43 s; capped it took 1.1 s.
+QWEN_TOKENS_PER_S = 20
+QWEN_MIN_TOKENS = 32
+
+
+@functools.cache
+def _load_qwen(model: str):
+    from mlx_audio.stt.utils import load
+
+    return load(model)
+
+
+def _transcribe_qwen(model: str, audio: np.ndarray, language: str, prompt: str) -> str:
+    """Qwen3-ASR fine-tune that writes Liujgoj Cantonese romanization, not Chinese characters.
+
+    No initial prompt: with ours it scored the same on 120 recorded lines and turned silent noise into "Keoiq!".
+    """
+    max_tokens = int(len(audio) / RATE * QWEN_TOKENS_PER_S) + QWEN_MIN_TOKENS
+    return _load_qwen(model).generate(audio, max_tokens=max_tokens).text.strip()
+
+
+ENGINES = {"whisper": _transcribe, "qwen3-asr": _transcribe_qwen}
+
+
+def make_info(model: str, language: str, engine: str = "whisper") -> Info:
+    if engine == "qwen3-asr":
+        attribution = Attribution(name="Yvthyvq", url="https://huggingface.co/Yvthyvq/Liujgoj-Cantonese-Qwen3-ASR-1.7B-V1")
+        name, description = "mlx-audio-qwen3-asr", "Qwen3-ASR 1.7B Cantonese (Liujgoj romanization), MLX"
+    else:
+        attribution = Attribution(name="WinsonLi", url=f"https://huggingface.co/{model}")
+        name, description = "mlx-whisper", "mlx-whisper Cantonese large-v3"
     return Info(asr=[AsrProgram(
-        name="mlx-whisper", description="mlx-whisper Cantonese large-v3", attribution=attribution,
+        name=name, description=description, attribution=attribution,
         installed=True, version="0.4", models=[AsrModel(
             name=model, description=model, attribution=attribution,
             installed=True, version="1", languages=[language])],
@@ -88,15 +119,15 @@ def make_info(model: str, language: str) -> Info:
 
 
 class SttHandler(AsyncEventHandler):
-    def __init__(self, *args, model: str, language: str, prompt: str, **kwargs) -> None:
+    def __init__(self, *args, model: str, language: str, prompt: str, engine: str = "whisper", **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.model, self.language, self.prompt = model, language, prompt
+        self.model, self.language, self.prompt, self.engine = model, language, prompt, engine
         self.converter = AudioChunkConverter(rate=RATE, width=2, channels=1)
         self.pcm = bytearray()
 
     async def handle_event(self, event: Event) -> bool:
         if Describe.is_type(event.type):
-            await self.write_event(make_info(self.model, self.language).event())
+            await self.write_event(make_info(self.model, self.language, self.engine).event())
         elif Transcribe.is_type(event.type):
             self.pcm.clear()
         elif AudioChunk.is_type(event.type):
@@ -106,7 +137,7 @@ class SttHandler(AsyncEventHandler):
             self.pcm.clear()
             started = time.monotonic()
             text = await asyncio.get_running_loop().run_in_executor(
-                _EXECUTOR, _transcribe, self.model, audio, self.language, self.prompt)
+                _EXECUTOR, ENGINES[self.engine], self.model, audio, self.language, self.prompt)
             _LOGGER.info("transcribed %.1fs audio in %.2fs: %s",
                          len(audio) / RATE, time.monotonic() - started, text)
             await self.write_event(Transcript(text=text).event())
@@ -120,15 +151,17 @@ async def main() -> None:
     parser.add_argument("--model", default=DEFAULT_MODEL, help="HF repo id or local MLX model dir")
     parser.add_argument("--language", default="yue")
     parser.add_argument("--initial-prompt", default=DEFAULT_PROMPT)
+    parser.add_argument("--engine", choices=ENGINES, default="whisper",
+                        help="qwen3-asr: local MLX dir of the Liujgoj Qwen3-ASR fine-tune (outputs romanization)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
-    _LOGGER.info("Loading %s", args.model)
+    _LOGGER.info("Loading %s (%s)", args.model, args.engine)
     await asyncio.get_running_loop().run_in_executor(
-        _EXECUTOR, _transcribe, args.model, np.zeros(RATE, np.float32), args.language, "")
+        _EXECUTOR, ENGINES[args.engine], args.model, np.zeros(RATE, np.float32), args.language, "")
     _LOGGER.info("Model ready on %s", args.uri)
     await AsyncServer.from_uri(args.uri).run(lambda *a, **k: SttHandler(
-        *a, model=args.model, language=args.language, prompt=args.initial_prompt, **k))
+        *a, model=args.model, language=args.language, prompt=args.initial_prompt, engine=args.engine, **k))
 
 
 if __name__ == "__main__":
