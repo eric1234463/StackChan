@@ -154,7 +154,7 @@ async def main() -> None:
     parser.add_argument("--model", help="HF repo id or local MLX model dir (default depends on --engine)")
     parser.add_argument("--language", default="yue")
     parser.add_argument("--initial-prompt", default=DEFAULT_PROMPT)
-    parser.add_argument("--engine", choices=ENGINES, default="qwen3-asr",
+    parser.add_argument("--engine", choices=ENGINES, default="whisper",
                         help="qwen3-asr writes Liujgoj romanization, whisper writes Chinese characters")
     args = parser.parse_args()
     args.model = args.model or (DEFAULT_QWEN_MODEL if args.engine == "qwen3-asr" else DEFAULT_MODEL)

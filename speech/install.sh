@@ -1,14 +1,14 @@
 #!/bin/sh
 # Install (or reinstall) the STT/TTS launchd agents for the current user.
 #   TTS_MODEL_DIR=/path/to/qwen3-tts-...-8bit [TTS_VOICE=eric] [TTS_SPEED=1.15] \
-#     [STT_ENGINE=qwen3-asr|whisper] [STT_MODEL=hf-repo-or-dir] ./install.sh
+#     [STT_ENGINE=whisper|qwen3-asr] [STT_MODEL=hf-repo-or-dir] ./install.sh
 set -eu
 : "${TTS_MODEL_DIR:?set TTS_MODEL_DIR to the merged Qwen3-TTS HK Cantonese MLX model directory}"
-STT_ENGINE="${STT_ENGINE:-qwen3-asr}"
-if [ "$STT_ENGINE" = whisper ]; then
-  STT_MODEL="${STT_MODEL:-WinsonLi/whisper-large-v3-cantonese-mlx-4bit}"
-else
+STT_ENGINE="${STT_ENGINE:-whisper}"
+if [ "$STT_ENGINE" = qwen3-asr ]; then
   STT_MODEL="${STT_MODEL:-$HOME/models/liujgoj-qwen3-asr-1.7b-mlx-8bit}"
+else
+  STT_MODEL="${STT_MODEL:-WinsonLi/whisper-large-v3-cantonese-mlx-4bit}"
 fi
 TTS_VOICE="${TTS_VOICE:-hk_voice_343}"
 TTS_SPEED="${TTS_SPEED:-1.0}"
