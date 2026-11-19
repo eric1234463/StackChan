@@ -7,4 +7,5 @@ BRIDGE_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOKEN="$(sed -n 's/^BRIDGE_DEVICE_TOKEN=//p' "$BRIDGE_DIR/.env" | tr -d "\"'")"
 PORT="$(sed -n 's/^BRIDGE_PORT=//p' "$BRIDGE_DIR/.env")"
 curl -sS --fail-with-body --get "http://127.0.0.1:${PORT:-8765}/announce" \
-  -H "Authorization: Bearer $TOKEN" --data-urlencode "text=$1"
+  -H "Authorization: Bearer $TOKEN" --data-urlencode "text=$1" \
+  -w '\nHTTP %{http_code}\n'
