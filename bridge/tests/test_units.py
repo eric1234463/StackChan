@@ -145,3 +145,43 @@ def test_config_romanized_stt_tells_hermes():
     assert not plain.stt_romanized and plain.instructions == config.DEFAULT_INSTRUCTIONS
     cfg = config.load(env={**env, "STT_ROMANIZED": "1"})
     assert cfg.stt_romanized and cfg.instructions == config.DEFAULT_INSTRUCTIONS + config.ROMANIZED_NOTE
+
+
+def test_webhook_delivery_signs_and_acks():
+    import asyncio
+    import hashlib
+    import hmac as hmac_mod
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content
+        seen["ts"] = request.headers["x-openbot-timestamp"]
+        seen["id"] = request.headers["x-openbot-delivery-id"]
+        seen["sig"] = request.headers["x-openbot-signature"]
+        assert request.headers["Content-Type"] == "application/json"
+        return httpx.Response(202, json={})
+
+    async def go() -> str:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await services.deliver_to_openbot(client, "https://example.invalid/hook",
+                                                     "s3cret", "開客廳燈", False, 5.0)
+
+    assert asyncio.run(go()) == services.WEBHOOK_ACK
+    body = json.loads(seen["body"])
+    assert body["type"] == "stackchan_voice" and body["data"]["text"] == "開客廳燈"
+    expect = hmac_mod.new(b"s3cret", f"{seen['ts']}.{seen['id']}.".encode() + seen["body"],
+                          hashlib.sha256).hexdigest()
+    assert seen["sig"] == f"sha256={expect}"
+
+
+def test_config_webhook_optional_and_secret_from_file(tmp_path):
+    env = {"BRIDGE_DEVICE_TOKEN": "t", "HERMES_API_KEY": "k"}
+    assert config.load(env=env).openbot_webhook_url == ""
+    secret = tmp_path / "whsecret"
+    secret.write_text("s3cret\n")
+    cfg = config.load(env={**env, "OPENBOT_WEBHOOK_URL": "https://example.invalid/hook",
+                           "OPENBOT_WEBHOOK_SECRET_FILE": str(secret)})
+    assert cfg.openbot_webhook_url == "https://example.invalid/hook"
+    assert cfg.openbot_webhook_secret == "s3cret"
+    assert config.load(env={**env, "OPENBOT_WEBHOOK_SECRET_FILE": str(tmp_path / "nope")}).openbot_webhook_secret == ""

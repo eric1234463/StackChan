@@ -1,7 +1,12 @@
-"""Clients for Wyoming STT/TTS and the Hermes api_server."""
+"""Clients for Wyoming STT/TTS, the Hermes api_server (legacy), and the OpenBot webhook brain."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json
+import time
+import uuid
 
 import httpx
 import numpy as np
@@ -14,7 +19,7 @@ from .audio import IN_RATE
 
 
 class ServiceError(Exception):
-    """A backend (STT, TTS, Hermes) failed; message is safe to log."""
+    """A backend (STT, TTS, Hermes, OpenBot webhook) failed; message is safe to log."""
 
 
 async def transcribe(uri: str, pcm: bytes, language: str, timeout_s: float) -> str:
@@ -96,3 +101,38 @@ async def ask_hermes(client: httpx.AsyncClient, url: str, api_key: str, conversa
     if not reply:
         raise ServiceError("Hermes returned empty reply")
     return reply
+
+
+# Spoken on the device as soon as the transcript reaches OpenBot; the full
+# answer arrives later via the routine calling /announce.
+WEBHOOK_ACK = "收到，管家跟緊。"
+
+# A follow-up (device re-listening right after a reply) may just be the tail
+# of the turn the routine already answered; still deliver it, flagged.
+async def deliver_to_openbot(client: httpx.AsyncClient, url: str, secret: str, text: str,
+                             followup: bool, timeout_s: float) -> str:
+    """POST a voice transcript to the OpenBot webhook brain. Returns short text
+    for the device to speak at once; the routine announces the real answer."""
+    payload = {"text": text, "followup": followup, "device": "stackchan"}
+    raw = json.dumps({"type": "stackchan_voice", "data": payload}, ensure_ascii=False,
+                     separators=(",", ":")).encode("utf-8")
+    timestamp = str(int(time.time()))
+    delivery_id = uuid.uuid4().hex
+    signature = hmac.new(secret.encode("utf-8"),
+                         f"{timestamp}.{delivery_id}.".encode("utf-8") + raw,
+                         hashlib.sha256).hexdigest()
+    try:
+        response = await client.post(
+            url,
+            content=raw,
+            headers={"Content-Type": "application/json",
+                     "x-openbot-timestamp": timestamp,
+                     "x-openbot-delivery-id": delivery_id,
+                     "x-openbot-signature": f"sha256={signature}"},
+            timeout=timeout_s,
+        )
+    except httpx.HTTPError as exc:
+        raise ServiceError(f"OpenBot webhook unavailable: {type(exc).__name__}") from exc
+    if response.status_code not in (200, 202):
+        raise ServiceError(f"OpenBot webhook HTTP {response.status_code}")
+    return WEBHOOK_ACK

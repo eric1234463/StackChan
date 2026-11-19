@@ -36,7 +36,7 @@ class Fakes:
         self.stt_calls.append(len(pcm))
         return self.transcript if "{n}" not in self.transcript else self.transcript.format(n=len(pcm))
 
-    async def ask(self, text: str) -> str:
+    async def ask(self, text: str, followup: bool = False) -> str:
         self.asked.append(text)
         if self.hermes_gate:
             await self.hermes_gate.wait()

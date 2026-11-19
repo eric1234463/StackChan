@@ -48,8 +48,9 @@ WAKE_GAP_S = 1.0
 @dataclass
 class Backends:
     transcribe: Callable[[bytes], Awaitable[str]]
-    ask: Callable[[str], Awaitable[str]]
+    ask: Callable[[str, bool], Awaitable[str]]  # (transcript, followup) -> text for the device to speak
     synthesize: Callable[[str], Awaitable[tuple[np.ndarray, int]]]
+    skip_ack: bool = False  # True when ask answers fast (webhook): no "working on it" filler first
 
 
 class Conversation:
@@ -69,14 +70,23 @@ class Conversation:
 
 
 def real_backends(cfg: Config, http: httpx.AsyncClient) -> Backends:
+    transcribe = lambda pcm: services.transcribe(cfg.stt_uri, pcm, cfg.stt_language, cfg.stt_timeout_s)
+    synthesize = lambda text: services.synthesize(cfg.tts_uri, text, cfg.tts_timeout_s)
+    if cfg.openbot_webhook_url and cfg.openbot_webhook_secret:
+        async def ask_openbot(text: str, followup: bool) -> str:
+            return await services.deliver_to_openbot(http, cfg.openbot_webhook_url,
+                                                     cfg.openbot_webhook_secret, text,
+                                                     followup, cfg.openbot_webhook_timeout_s)
+        return Backends(transcribe=transcribe, ask=ask_openbot, synthesize=synthesize, skip_ack=True)
     conversation = Conversation(cfg.hermes_conversation, cfg.hermes_session_idle_s)
     return Backends(
-        transcribe=lambda pcm: services.transcribe(cfg.stt_uri, pcm, cfg.stt_language, cfg.stt_timeout_s),
-        ask=lambda text: services.ask_hermes(http, cfg.hermes_url, cfg.hermes_api_key, conversation.name(),
-                                             cfg.instructions, text, cfg.hermes_timeout_s,
-                                             model=cfg.hermes_model, provider=cfg.hermes_provider,
-                                             reasoning_effort=cfg.hermes_reasoning_effort),
-        synthesize=lambda text: services.synthesize(cfg.tts_uri, text, cfg.tts_timeout_s),
+        transcribe=transcribe,
+        ask=lambda text, followup: services.ask_hermes(http, cfg.hermes_url, cfg.hermes_api_key,
+                                                       conversation.name(), cfg.instructions, text,
+                                                       cfg.hermes_timeout_s, model=cfg.hermes_model,
+                                                       provider=cfg.hermes_provider,
+                                                       reasoning_effort=cfg.hermes_reasoning_effort),
+        synthesize=synthesize,
     )
 
 
@@ -309,20 +319,20 @@ class Session:
             return
 
         await self.send_json(type="stt", text=transcript)
-        # Ask Hermes now; the acknowledgement plays while it works.
+        # Ask the brain now; the acknowledgement plays while a slow one works.
         reply = asyncio.create_task(self.ask(transcript))
         try:
-            await self.speak(reply, t0)
+            await self.speak(reply, t0, with_ack=not self.backends.skip_ack)
         finally:
             reply.cancel()
 
     async def ask(self, transcript: str) -> str:
         t0 = time.monotonic()
         try:
-            reply = await self.backends.ask(transcript)
-            log.info("hermes %d ms: %s", int((time.monotonic() - t0) * 1000), reply)
+            reply = await self.backends.ask(transcript, self.followup)
+            log.info("backend %d ms: %s", int((time.monotonic() - t0) * 1000), reply)
         except services.ServiceError as exc:
-            log.error("turn failed at Hermes: %s", exc)
+            log.error("turn failed at backend: %s", exc)
             reply = self.cfg.fallback_text
         return clean(reply)
 

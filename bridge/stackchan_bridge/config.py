@@ -40,6 +40,12 @@ class Config:
     # The profile default is "high"; on 5 HA turns low/minimal took 19-36 s vs 38 s (provider noise dominates).
     hermes_reasoning_effort: str = ""  # none|minimal|low|medium|high; "" = Hermes default
     hermes_timeout_s: float = 120.0
+    # OpenBot webhook brain (B line): when url + secret file are both set, voice
+    # transcripts go to the OpenBot routine instead of the Hermes api_server.
+    # Secret is read once at startup from the file, never logged.
+    openbot_webhook_url: str = ""
+    openbot_webhook_secret: str = ""
+    openbot_webhook_timeout_s: float = 15.0
     instructions: str = DEFAULT_INSTRUCTIONS
     stt_timeout_s: float = 30.0
     tts_timeout_s: float = 30.0
@@ -74,6 +80,16 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def _read_secret_file(path: str) -> str:
+    path = path.strip().strip('"').strip("'")
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Config:
     if env is None:
         file_values = _read_env_file(env_file or Path(__file__).resolve().parent.parent / ".env")
@@ -103,6 +119,10 @@ def load(env: dict[str, str] | None = None, env_file: Path | None = None) -> Con
         hermes_provider=env.get("HERMES_PROVIDER", ""),
         hermes_reasoning_effort=env.get("HERMES_REASONING_EFFORT", ""),
         hermes_timeout_s=float(env.get("HERMES_TIMEOUT_S", defaults.hermes_timeout_s)),
+        openbot_webhook_url=env.get("OPENBOT_WEBHOOK_URL", "").rstrip("/"),
+        openbot_webhook_secret=_read_secret_file(env.get("OPENBOT_WEBHOOK_SECRET_FILE", "")),
+        openbot_webhook_timeout_s=float(env.get("OPENBOT_WEBHOOK_TIMEOUT_S",
+                                                defaults.openbot_webhook_timeout_s)),
         instructions=env.get("HERMES_INSTRUCTIONS", defaults.instructions) + (ROMANIZED_NOTE if romanized else ""),
         vad_rms_threshold=float(env.get("VAD_RMS_THRESHOLD", defaults.vad_rms_threshold)),
         vad_end_silence_ms=int(env.get("VAD_END_SILENCE_MS", defaults.vad_end_silence_ms)),
