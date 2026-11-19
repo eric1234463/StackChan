@@ -17,7 +17,7 @@
     {
         "url": "https://github.com/78/xiaozhi-esp32.git",
         "path": "xiaozhi-esp32",
-        "branch": "v2.2.4",
+        "branch": "1f37f7806e5cff1028c67443d24a47ed57d90d59",
         "patch": "patches/xiaozhi-esp32.patch"
     },
     {
